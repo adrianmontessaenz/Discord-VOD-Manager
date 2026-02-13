@@ -55,6 +55,12 @@ async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = Fa
         _type_: None
     """
     video_list = await asyncio.to_thread(m_config[ctx.guild.id].get_old_videos, ctx.guild.id, ctx.channel.id, youtube, date, m_database)
+    
+    # Incorrect date format, return error message
+    if len(video_list) == 1 and "error" in video_list[0]:
+        await ctx.send(video_list[0]["error"])
+        return    
+    
     database_videos = m_database.get_videos(ctx.guild.id, ctx.channel.id)
     new_videos = [video for video in video_list if video['url'] not in database_videos]
     repeated_videos = [video for video in video_list if video['url'] in database_videos]
@@ -131,6 +137,9 @@ async def on_ready():
         m_config[guild.id] = config.MyConfig()
         guild_data = m_database.load_guild_config(guild.id)
         print(f"Loaded config for guild {guild.name} ({guild.id}): {guild_data}")
+        if not guild_data:
+            print(f"No config found for guild {guild.name} ({guild.id}), initializing empty config.")
+            return
         for channel_id, channel_data in guild_data.items():
             m_config[guild.id].add_channel(channel_id, channel_data["characters_1"], channel_data["characters_2"], channel_data["players_1"], channel_data["players_2"], channel_data["youtube_channels"], channel_data["enforce_characters"])
             
@@ -421,14 +430,14 @@ async def list_youtube_channels(ctx):
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
     """
-    channels = m_config[ctx.guild.id].get_youtube_channels(ctx.guild.id, ctx.channel.id)
+    channels = m_config[ctx.guild.id].get_youtube_channels(ctx.guild.id, ctx.channel.id, m_database)
     if not channels:
         await ctx.send(f"No youtube channels stored yet.")
         return
     
     page_size = 15  # number of characters per page
     pages = [
-        channels[i:i+page_size]
+        list(channels)[i:i+page_size]
         for i in range(0, len(channels), page_size)
     ]
 
@@ -604,6 +613,17 @@ async def get_old_videos(ctx, date: str = None):
         date (str, optional): The date until to which search for videos. Defaults to None.
     """
     await ctx.send(f"This will take a while depending on channel history and video ammount")
+    
+    # Check if there is already a video gathering task running for the channel, if there is, return an error message. Otherwise, create a new task to gather videos and store it in the global variable.
+    if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
+        await ctx.send(f"Video gathering is already in progress for this channel. Please wait for it to finish or stop it with !stop_video_gathering command before starting a new one.")
+        return
+    
+    elif ctx.guild.id not in m_guild_tasks:
+        m_guild_tasks[ctx.guild.id] = {}
+        if ctx.channel.id not in m_guild_tasks[ctx.guild.id]:
+            m_guild_tasks[ctx.guild.id][ctx.channel.id] = {}
+    
     m_guild_tasks[ctx.guild.id][ctx.channel.id]["video_gathering_task"] = asyncio.create_task(get_videos_for_channel(ctx, date, True))
         
 # Command to enforce that characters are also in the title of the videos. Some VODs don't show the name on titles, 
@@ -636,9 +656,14 @@ async def update_frequently(ctx):
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
     """
-    if ctx.channel.id in m_guild_tasks[ctx.guild.id]:
-        await ctx.send("Automatic updates are already enabled for this channel.")
+    
+    if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "update_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
+        await ctx.send(f"Automatic updates are already enabled for this channel. Please wait for it to send new videos or stop it with !stop_updates command before starting a new one.")
         return
+    elif ctx.guild.id not in m_guild_tasks:
+        m_guild_tasks[ctx.guild.id] = {}
+        if ctx.channel.id not in m_guild_tasks[ctx.guild.id]:
+            m_guild_tasks[ctx.guild.id][ctx.channel.id] = {}
 
     async def update_task():
         while True:

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 import sqlite3
@@ -31,7 +31,7 @@ class MyConfig:
         """Initialize the configuration for all channels."""
         self._my_channels = {}
         
-    def _add_new_channel(self, id: int):
+    def _add_new_channel(self, id: int, guild_id: int, database: database.MyDatabase = None):
         """Add a new channel to the configuration. 
         It will create a new instance of _MyChannels for the channel and store it in the dictionary.
 
@@ -39,6 +39,10 @@ class MyConfig:
             id (int): The ID of the channel.
         """
         self._my_channels[id] = _MyChannels()
+        if database is not None:
+            database.add_channel(guild_id, id)
+            for yt in self._my_channels[id].youtube_channels:
+                database.add_youtube_channel(guild_id, id, self._my_channels[id].youtube_channels[yt], yt)
         
     def add_channel(self, id: int, characters_1: list, characters_2: list, players_1: list, players_2: list, youtube_channels: list, enforce_characters: bool):
         """Add a channel to the configuration. 
@@ -58,8 +62,8 @@ class MyConfig:
         self._my_channels[id].characters_2 = characters_2
         self._my_channels[id].players_1 = players_1
         self._my_channels[id].players_2 = players_2
-        self._my_channels[id].youtube_channels = youtube_channels
         self._my_channels[id].enforce_characters = enforce_characters
+        self._my_channels[id].youtube_channels = youtube_channels
     
     def remove_channel(self, guild_id: int, id: int, database: database.MyDatabase = None):
         """Remove a channel from the configuration. 
@@ -80,8 +84,7 @@ class MyConfig:
             char (str): The character to add.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         self._my_channels[id].characters_1.append(char)
         database.add_character_1(guild_id, id, char)
     
@@ -93,8 +96,7 @@ class MyConfig:
             char (str): The character to add.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         self._my_channels[id].characters_2.append(char)
         database.add_character_2(guild_id, id, char)
         
@@ -109,8 +111,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if char in self._my_channels[id].characters_1:
             self._my_channels[id].characters_1.remove(char)
             database.remove_character_1(guild_id, id, char)
@@ -127,8 +128,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if char in self._my_channels[id].characters_2:
             self._my_channels[id].characters_2.remove(char)
             database.remove_character_2(guild_id, id, char)
@@ -145,8 +145,7 @@ class MyConfig:
             _type_: The list of characters for the specified channel.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].characters_1
     
     def get_characters_2(self, guild_id: int, id: int, database: database.MyDatabase = None):
@@ -159,8 +158,7 @@ class MyConfig:
             _type_: The list of characters for the specified channel.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].characters_2
         
     def enforce_characters(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
@@ -173,8 +171,7 @@ class MyConfig:
             state (bool): The state to set the flag to.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         self._my_channels[id].enforce_characters = state
         database.set_enforce_character(guild_id, id, state)
         
@@ -192,8 +189,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if yt.startswith("UC"):
             if yt in self._my_channels[id].youtube_channels:
                 return f"Channel '{yt} was already stored"
@@ -231,15 +227,14 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if yt in self._my_channels[id].youtube_channels.keys():
             self._my_channels[id].youtube_channels.pop(yt)
             database.remove_youtube_channel(guild_id, id, self._my_channels[id].youtube_channels[yt])
             return f"Channel '{yt}' was removed from search"
         return f"Channel '{yt}' was not found in search"
         
-    def get_youtube_channels(self, guild_id: int, id: int):
+    def get_youtube_channels(self, guild_id: int, id: int, database: database.MyDatabase = None):
         """Get the list of YouTube channels for a specific channel.
 
         Args:
@@ -249,8 +244,7 @@ class MyConfig:
             _type_: The list of YouTube channel IDs for the specified channel.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].youtube_channels.keys()
 
     def add_player_1(self, guild_id: int, id: int, player: str, database: database.MyDatabase = None):
@@ -264,8 +258,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if player in self._my_channels[id].players_1:
             return f"Player '{player}' was already stored"
         self._my_channels[id].players_1.append(player)
@@ -282,8 +275,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if player in self._my_channels[id].players_2:
             return f"Player '{player}' was already stored"
         self._my_channels[id].players_2.append(player)
@@ -301,8 +293,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if player in self._my_channels[id].players_1:
             self._my_channels[id].players_1.remove(player)
             database.remove_player_1(guild_id, id, player)
@@ -319,8 +310,7 @@ class MyConfig:
             _type_: The result of the operation.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         if player in self._my_channels[id].players_2:
             self._my_channels[id].players_2.remove(player)
             database.remove_player_2(guild_id, id, player)
@@ -337,8 +327,7 @@ class MyConfig:
             _type_: The list of players for the specified channel.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].players_1
     
     def get_players_2(self, guild_id: int, id: int, database: database.MyDatabase = None):
@@ -351,8 +340,7 @@ class MyConfig:
             _type_: The list of players for the specified channel.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].players_2
     
     def get_old_videos(self, guild_id: int, id: int, youtube, date: str = None, database: database.MyDatabase = None):
@@ -367,24 +355,25 @@ class MyConfig:
             _type_: The list of old videos for the specified channel.
         """
         if id not in self._my_channels.keys():
-            self._add_new_channel(id)
-            database.add_channel(guild_id, id)
+            self._add_new_channel(id, guild_id, database)
         all_videos = []
         
         # Parse date if provided. If provided wrong, print error and ignore date filter
         filter_date = None
         if date is not None:
             try:
-                filter_date = datetime.strptime(date, "%Y-%m-%d")
+                filter_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             except ValueError:
-                print(f"Invalid date format '{date}'. Expected format is 'YYYY-MM-DD'. Ignoring date filter.")
+                print(f"Invalid date format '{date}'. Expected format is 'YYYY-MM-DD'")
+                return [{"error": f"Invalid date format '{date}'. Expected format is 'YYYY-MM-DD'"}]
 
         # Loop on youtube channels
         for youtube_channel in self._my_channels[id].youtube_channels:
+            print(f"Getting videos for channel '{youtube_channel}'")
             # Get uploads playlist
             res =  youtube.channels().list(
                 part="contentDetails",
-                id=youtube_channel
+                id=self._my_channels[id].youtube_channels[youtube_channel]
             ).execute()
             
             items = res.get("items")
@@ -399,7 +388,7 @@ class MyConfig:
                     playlistId=uploads_playlist_id,
                     maxResults=25,
                     pageToken=next_page_token
-                ).execute()
+                ).execute()                
                 
                 # For each video in page, check if its valid following criteria
                 for video in res.get("items", []):
@@ -407,7 +396,7 @@ class MyConfig:
                     title = video["snippet"]["title"]
                     url = f"https://www.youtube.com/watch?v={video_id}"
                     published_at = video["snippet"]["publishedAt"]  # ISO 8601 string
-                    
+                 
                     # Convert to datetime
                     dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
 
@@ -446,7 +435,7 @@ class MyConfig:
                     if len(self._my_channels[id].players_1) >= 1:
                         for player in self._my_channels[id].players_1:
                             if player in title:
-                                print(f"Video '{title}' has playername '{player}' in it")
+                                print(f"Video '{title}' has player1 '{player}' in it")
                                 has_player_1 = True
                                 break
                     else:
@@ -456,14 +445,15 @@ class MyConfig:
                     if len(self._my_channels[id].players_2) >= 1:
                         for player in self._my_channels[id].players_2:
                             if player in title:
-                                print(f"Video '{title}' has playername '{player}' in it")
+                                print(f"Video '{title}' has player2 '{player}' in it")
                                 has_player_2 = True
                                 break
                     else:
                         has_player_2 = True
                     
                     # Check if video is valid
-                    if has_player_1 is True and has_player_2 is True and has_character_1 is True and has_character_2 is True: 
+                    if has_player_1 is True and has_player_2 is True and ((has_character_1 is True and has_character_2 is True) or self._my_channels[id].enforce_characters is False): 
+                        print(f"Video '{title}' passed all criteria, adding it to the list")
                         all_videos.append(
                             {
                                 "title": title,

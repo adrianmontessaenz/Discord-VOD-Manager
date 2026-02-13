@@ -202,7 +202,7 @@ class MyDatabase:
                                         "characters_2": [],
                                         "players_1": [],
                                         "players_2": [],
-                                        "youtube_channels": []}
+                                        "youtube_channels": {}}
                     for row in self.cursor.fetchall()}
 
         if not channels:
@@ -244,11 +244,11 @@ class MyDatabase:
 
         # Load YouTube channels
         self.cursor.execute(f"""
-            SELECT channel_id, youtube_channel_id FROM channel_youtube
+            SELECT channel_id, youtube_channel_id, youtube_channel_name FROM channel_youtube
             WHERE guild_id=? AND channel_id IN ({','.join('?' for _ in channel_ids)})
         """, (guild_id, *channel_ids))
         for row in self.cursor.fetchall():
-            channels[row["channel_id"]]["youtube_channels"].append(row["youtube_channel_id"])
+            channels[row["channel_id"]]["youtube_channels"][row["youtube_channel_name"]] = row["youtube_channel_id"]
 
         return channels
 
