@@ -14,7 +14,10 @@ class MyDatabase:
         CREATE TABLE IF NOT EXISTS channels (
             guild_id INTEGER,
             channel_id INTEGER,
-            enforce_character BOOLEAN DEFAULT 0,
+            enforce_character_1 BOOLEAN DEFAULT 0,
+            enforce_character_2 BOOLEAN DEFAULT 0,
+            enforce_player_1 BOOLEAN DEFAULT 1,
+            enforce_player_2 BOOLEAN DEFAULT 1,
             PRIMARY KEY (guild_id, channel_id)
         )""")
         self.cursor.execute("""
@@ -65,11 +68,11 @@ class MyDatabase:
         )""")
         self.conn.commit()
         
-    def add_channel(self, guild_id, channel_id, enforce_character=False):
+    def add_channel(self, guild_id, channel_id, enforce_character_1=False, enforce_character_2=False, enforce_player_1=True, enforce_player_2=True):
         """Add a new channel to the database."""
         self.cursor.execute("""
-        INSERT OR IGNORE INTO channels (guild_id, channel_id, enforce_character)
-        VALUES (?, ?, ?)""", (guild_id, channel_id, enforce_character))
+        INSERT OR IGNORE INTO channels (guild_id, channel_id, enforce_character_1, enforce_character_2, enforce_player_1, enforce_player_2)
+        VALUES (?, ?, ?, ?, ?, ?)""", (guild_id, channel_id, enforce_character_1, enforce_character_2, enforce_player_1, enforce_player_2))
         self.conn.commit()
         
     def remove_channel(self, guild_id, channel_id):
@@ -90,10 +93,28 @@ class MyDatabase:
         DELETE FROM channel_videos WHERE guild_id = ? AND channel_id = ?""", (guild_id, channel_id))
         self.conn.commit()
         
-    def set_enforce_character(self, guild_id, channel_id, enforce):
-        """Set the enforce_character flag for a channel."""
+    def set_enforce_character_1(self, guild_id, channel_id, enforce):
+        """Set the enforce_character_1 flag for a channel."""
         self.cursor.execute("""
-        UPDATE channels SET enforce_character = ? WHERE guild_id = ? AND channel_id = ?""", (enforce, guild_id, channel_id))
+        UPDATE channels SET enforce_character_1 = ? WHERE guild_id = ? AND channel_id = ?""", (enforce, guild_id, channel_id))
+        self.conn.commit()
+        
+    def set_enforce_character_2(self, guild_id, channel_id, enforce):
+        """Set the enforce_character_2 flag for a channel."""
+        self.cursor.execute("""
+        UPDATE channels SET enforce_character_2 = ? WHERE guild_id = ? AND channel_id = ?""", (enforce, guild_id, channel_id))
+        self.conn.commit()
+        
+    def set_enforce_player_1(self, guild_id, channel_id, enforce):
+        """Set the enforce_player_1 flag for a channel."""
+        self.cursor.execute("""
+        UPDATE channels SET enforce_player_1 = ? WHERE guild_id = ? AND channel_id = ?""", (enforce, guild_id, channel_id))
+        self.conn.commit()
+        
+    def set_enforce_player_2(self, guild_id, channel_id, enforce):
+        """Set the enforce_player_2 flag for a channel."""
+        self.cursor.execute("""
+        UPDATE channels SET enforce_player_2 = ? WHERE guild_id = ? AND channel_id = ?""", (enforce, guild_id, channel_id))
         self.conn.commit()
         
     def add_character_1(self, guild_id, channel_id, character):
@@ -167,6 +188,12 @@ class MyDatabase:
         INSERT OR IGNORE INTO channel_videos (guild_id, channel_id, video_id, title, url, published_at)
         VALUES (?, ?, ?, ?, ?, ?)""", (guild_id, channel_id, video_id, title, url, published_at))
         self.conn.commit()
+        
+    def remove_video_by_url(self, guild_id, channel_id, video_url):
+        """Remove a video from a channel."""
+        self.cursor.execute("""
+        DELETE FROM channel_videos WHERE guild_id = ? AND channel_id = ? AND url = ?""", (guild_id, channel_id, video_url))
+        self.conn.commit()
     
     def get_videos(self, guild_id, channel_id):
         """Get all videos for a channel."""
@@ -196,8 +223,11 @@ class MyDatabase:
     def load_guild_config(self, guild_id):
         """Load all channels and their config for a guild in one go."""
         # Load channels + enforce flag
-        self.cursor.execute("SELECT channel_id, enforce_character FROM channels WHERE guild_id=?", (guild_id,))
-        channels = {row["channel_id"]: {"enforce_characters": bool(row["enforce_character"]),
+        self.cursor.execute("SELECT channel_id, enforce_character_1, enforce_character_2, enforce_player_1, enforce_player_2 FROM channels WHERE guild_id=?", (guild_id,))
+        channels = {row["channel_id"]: {"enforce_character_1": bool(row["enforce_character_1"]),
+                                        "enforce_character_2": bool(row["enforce_character_2"]),
+                                        "enforce_player_1": bool(row["enforce_player_1"]),
+                                        "enforce_player_2": bool(row["enforce_player_2"]),
                                         "characters_1": [],
                                         "characters_2": [],
                                         "players_1": [],

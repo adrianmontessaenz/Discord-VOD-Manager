@@ -21,10 +21,13 @@ class _MyChannels:
         
         self.characters_1 = []
         self.characters_2 = []
+        self.enforce_character_1 = False
+        self.enforce_character_2 = False
         self.players_1 = []
         self.players_2 = []
+        self.enforce_player_1 = True
+        self.enforce_player_2 = True
         self.youtube_channels = file_json["youtube_channels"]
-        self.enforce_characters = True
 
 class MyConfig:
     def __init__(self):
@@ -40,11 +43,11 @@ class MyConfig:
         """
         self._my_channels[id] = _MyChannels()
         if database is not None:
-            database.add_channel(guild_id, id)
+            database.add_channel(guild_id, id, self._my_channels[id].enforce_character_1, self._my_channels[id].enforce_character_2, self._my_channels[id].enforce_player_1, self._my_channels[id].enforce_player_2)
             for yt in self._my_channels[id].youtube_channels:
                 database.add_youtube_channel(guild_id, id, self._my_channels[id].youtube_channels[yt], yt)
         
-    def add_channel(self, id: int, characters_1: list, characters_2: list, players_1: list, players_2: list, youtube_channels: list, enforce_characters: bool):
+    def add_channel(self, id: int, characters_1: list, characters_2: list, players_1: list, players_2: list, youtube_channels: list, enforce_variables: dict):
         """Add a channel to the configuration. 
         It will create a new instance of _MyChannels for the channel and store it in the dictionary.
 
@@ -55,14 +58,17 @@ class MyConfig:
             players_1 (list): The list of players to search for in the videos for player 1.
             players_2 (list): The list of players to search for in the videos for player 2.
             youtube_channels (list): The list of YouTube channels to search for videos.
-            enforce_characters (bool): Whether to enforce that the characters are also in the title of the videos.
+            enforce_variables (dict): Whether to enforce that the characters are also in the title of the videos.
         """
         self._my_channels[id] = _MyChannels()
         self._my_channels[id].characters_1 = characters_1
         self._my_channels[id].characters_2 = characters_2
         self._my_channels[id].players_1 = players_1
         self._my_channels[id].players_2 = players_2
-        self._my_channels[id].enforce_characters = enforce_characters
+        self._my_channels[id].enforce_character_1 = enforce_variables["enforce_character_1"] if "enforce_character_1" in enforce_variables else False
+        self._my_channels[id].enforce_character_2 = enforce_variables["enforce_character_2"] if "enforce_character_2" in enforce_variables else False
+        self._my_channels[id].enforce_player_1 = enforce_variables["enforce_player_1"] if "enforce_player_1" in enforce_variables else True
+        self._my_channels[id].enforce_player_2 = enforce_variables["enforce_player_2"] if "enforce_player_2" in enforce_variables else True
         self._my_channels[id].youtube_channels = youtube_channels
     
     def remove_channel(self, guild_id: int, id: int, database: database.MyDatabase = None):
@@ -85,8 +91,12 @@ class MyConfig:
         """
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
+            
+        if char in self._my_channels[id].characters_1:
+            return f"Character '{char}' was already stored"
         self._my_channels[id].characters_1.append(char)
         database.add_character_1(guild_id, id, char)
+        return f"Character '{char}' was stored"
     
     def add_character_2(self, guild_id: int, id: int, char: str, database: database.MyDatabase = None):
         """Add a character to the list of characters to search for in the videos.
@@ -97,8 +107,12 @@ class MyConfig:
         """
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
+            
+        if char in self._my_channels[id].characters_2:
+            return f"Character '{char}' was already stored"
         self._my_channels[id].characters_2.append(char)
         database.add_character_2(guild_id, id, char)
+        return f"Character '{char}' was stored"
         
     def remove_character_1(self, guild_id: int, id: int, char: str, database: database.MyDatabase = None):
         """Remove a character from the list of characters to search for in the videos.
@@ -160,8 +174,8 @@ class MyConfig:
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].characters_2
-        
-    def enforce_characters(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+    
+    def enforce_character_1(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
         """Set the enforce_characters flag for a specific channel. 
         This flag is used to determine if the bot should enforce that the characters are also in the title of the videos.
          
@@ -172,8 +186,23 @@ class MyConfig:
         """
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
-        self._my_channels[id].enforce_characters = state
-        database.set_enforce_character(guild_id, id, state)
+        self._my_channels[id].enforce_character_1 = state
+        database.set_enforce_character_1(guild_id, id, state)
+    
+        
+    def enforce_character_2(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+        """Set the enforce_characters flag for a specific channel. 
+        This flag is used to determine if the bot should enforce that the characters are also in the title of the videos.
+         
+
+        Args:
+            id (int): The ID of the channel.
+            state (bool): The state to set the flag to.
+        """
+        if id not in self._my_channels.keys():
+            self._add_new_channel(id, guild_id, database)
+        self._my_channels[id].enforce_character_2 = state
+        database.set_enforce_character_2(guild_id, id, state)
         
     def add_youtube_channel(self, guild_id: int, id: int, yt: str, youtube, database: database.MyDatabase = None):
         """Add a youtube channel to the list of channels to search for videos.
@@ -197,6 +226,8 @@ class MyConfig:
             return f"Channel '{yt}' was stored"
         elif yt.startswith("@"):
             yt = yt[1:]
+        else:
+            return f"Invalid channel format '{yt}'. Please provide a channel ID starting with 'UC' or a channel name starting with '@'"
         
         res = youtube.search().list(
             part="snippet",
@@ -316,6 +347,34 @@ class MyConfig:
             database.remove_player_2(guild_id, id, player)
             return f"Player '{player}' was removed from search"
         return f"Player '{player}' was not found in search"
+    
+    def enforce_player_1(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+        """Set the enforce_player_1 flag for a specific channel. 
+        This flag is used to determine if the bot should enforce that player 1 is also in the title of the videos.
+         
+
+        Args:
+            id (int): The ID of the channel.
+            state (bool): The state to set the flag to.
+        """
+        if id not in self._my_channels.keys():
+            self._add_new_channel(id, guild_id, database)
+        self._my_channels[id].enforce_player_1 = state
+        database.set_enforce_player_1(guild_id, id, state)
+        
+    def enforce_player_2(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+        """Set the enforce_player_2 flag for a specific channel. 
+        This flag is used to determine if the bot should enforce that player 2 is also in the title of the videos.
+         
+
+        Args:
+            id (int): The ID of the channel.
+            state (bool): The state to set the flag to.
+        """
+        if id not in self._my_channels.keys():
+            self._add_new_channel(id, guild_id, database)
+        self._my_channels[id].enforce_player_2 = state
+        database.set_enforce_player_2(guild_id, id, state)
             
     def get_players_1(self, guild_id: int, id: int, database: database.MyDatabase = None):
         """Get the list of players for a specific channel.
@@ -460,6 +519,7 @@ class MyConfig:
                                 "url": url,
                                 "publishedAt": published_at
                             })
+                        database.add_video(guild_id, id, video_id, title, url, published_at)
                 
                 # Skip to next page of videos
                 next_page_token = res.get("nextPageToken")

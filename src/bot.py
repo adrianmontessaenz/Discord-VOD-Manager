@@ -54,6 +54,8 @@ async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = Fa
     Returns:
         _type_: None
     """
+    # Gather database videos and then fetch new videos from youtube into the database. This way, we can compare the videos and show which ones are new and which ones were already sent before.
+    database_videos = m_database.get_videos(ctx.guild.id, ctx.channel.id)
     video_list = await asyncio.to_thread(m_config[ctx.guild.id].get_old_videos, ctx.guild.id, ctx.channel.id, youtube, date, m_database)
     
     # Incorrect date format, return error message
@@ -61,7 +63,6 @@ async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = Fa
         await ctx.send(video_list[0]["error"])
         return    
     
-    database_videos = m_database.get_videos(ctx.guild.id, ctx.channel.id)
     new_videos = [video for video in video_list if video['url'] not in database_videos]
     repeated_videos = [video for video in video_list if video['url'] in database_videos]
     for msg in new_videos:
@@ -141,7 +142,13 @@ async def on_ready():
             print(f"No config found for guild {guild.name} ({guild.id}), initializing empty config.")
             return
         for channel_id, channel_data in guild_data.items():
-            m_config[guild.id].add_channel(channel_id, channel_data["characters_1"], channel_data["characters_2"], channel_data["players_1"], channel_data["players_2"], channel_data["youtube_channels"], channel_data["enforce_characters"])
+            enforce_values = {
+                "enforce_character_1": channel_data["enforce_character_1"] if "enforce_character_1" in channel_data else False,
+                "enforce_character_2": channel_data["enforce_character_2"] if "enforce_character_2" in channel_data else False,
+                "enforce_player_1": channel_data["enforce_player_1"] if "enforce_player_1" in channel_data else True,
+                "enforce_player_2": channel_data["enforce_player_2"] if "enforce_player_2" in channel_data else True
+            }
+            m_config[guild.id].add_channel(channel_id, channel_data["characters_1"], channel_data["characters_2"], channel_data["players_1"], channel_data["players_2"], channel_data["youtube_channels"], enforce_values)
             
 
 # Show welcome message and create memory for the server
@@ -194,6 +201,27 @@ async def on_guild_channel_delete(channel):
         m_guild_tasks[channel.guild.id].pop(channel.id)
     m_config[channel.guild.id].remove_channel(channel.guild.id, channel.id, m_database)
 
+# Handle errors in commands and send a message to the channel with the error. If the error is CommandNotFound, it sends a message saying that the command was not found and to use !help to see the list of available commands.
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        await ctx.send(f"❌ Command '{ctx.message.content}' not found. Type `!help` to see the list of available commands.")
+    else:
+        await ctx.send(f"An error occurred while processing the command: {str(error)}")
+        
+@bot.event
+async def on_message_deleted(message):
+    """Event that is called when a message is deleted. It checks if the message was sent by the bot and if it contains a video link, it removes the video from the database to avoid showing it again in the future.
+
+    Args:
+        message (_type_): The message that was deleted.
+    """
+    if message.author == bot.user:
+        if "http" not in message.content:
+            return
+        url = ["http" + part for part in message.content.split("http")[1:]]  # Get all links in the message (When sending youtube links, bot only sends one link per message)
+        m_database.remove_video_by_url(message.guild.id, message.channel.id, url)
+
 # ------------- Commands -------------
 # Simple command to test the bot is working and responding 
 @bot.command()
@@ -203,7 +231,7 @@ async def hello(ctx):
 
 # Command to add character to the list of characters to search for in the videos.
 @bot.command()
-async def add_character_1(ctx, choice: str = None):
+async def add_character_1(ctx, *choices: str):
     """Command to add character to the list of characters to search for in the videos. 
     If two characters are added, the bot will search for videos that have both characters in the title.
     If only one character is added, it will search for videos that have that character in the title.
@@ -212,22 +240,41 @@ async def add_character_1(ctx, choice: str = None):
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         choice (str, optional): The character to be added. Defaults to None.
     """
-    if not choice or choice not in config.smash_characters.keys():
-        await ctx.send(f"Choose a valid character")
+    if not choices:
+        await ctx.send(f"No character(s) provided. Please provide a character to add.")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot add character while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, add the character and then start the video gathering again with !get_old_videos command.")
         return
     
-    m_config[ctx.guild.id].add_character_1(ctx.guild.id, ctx.channel.id, choice, m_database)
-    await ctx.send(f"Character stored for search!")
-
+    valid_choices = [choice for choice in choices if choice in config.smash_characters]
+    added_characters = []
+    repeated_characters = []
+    for choice in valid_choices:
+        state =m_config[ctx.guild.id].add_character_1(ctx.guild.id, ctx.channel.id, choice, m_database)
+        if "already" in state.lower():
+            repeated_characters.append(choice)
+        else:
+            added_characters.append(choice)
+    
+    # Merge the messages for added characters and repeated characters into one message to avoid spamming the channel with multiple messages if multiple characters are added at once.    
+    final_message = ""
+    if added_characters:
+        final_message += f"Character(s) '{', '.join(added_characters)}' added to search!\n"
+    if repeated_characters:
+        final_message += f"Character(s) '{', '.join(repeated_characters)}' were already in the list.\n"
+    if len(valid_choices) < len(choices):
+        invalid_choices = [choice for choice in choices if choice not in config.smash_characters]
+        final_message += f"These characters are not valid and were not added: {', '.join(invalid_choices)}. Use !list_available_characters to see the list of valid characters."
+        
+    await ctx.send(final_message)
+    
 # Command to add character to the list of characters to search for in the videos.
 # If two characters are added, the bot will search for videos that have both characters in the title.
 # If only one character is added, it will search for videos that have that character in the title.
 @bot.command()
-async def add_character_2(ctx, choice: str = None):
+async def add_character_2(ctx, *choices: str):
     """Command to add character to the list of characters to search for in the videos. 
     If two characters are added, the bot will search for videos that have both characters in the title.
     If only one character is added, it will search for videos that have that character in the title.
@@ -236,57 +283,138 @@ async def add_character_2(ctx, choice: str = None):
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         choice (str, optional): The character to be added. Defaults to None.
     """
-    if not choice or choice not in config.smash_characters:
-        await ctx.send(f"Choose a valid character")
+    if not choices:
+        await ctx.send(f"No character(s) provided. Please provide a character to add.")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot add character while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, add the character and then start the video gathering again with !get_old_videos command.")
         return
     
-    m_config[ctx.guild.id].add_character_2(ctx.guild.id, ctx.channel.id, choice, m_database)
-    await ctx.send(f"Character stored for search!")
+    valid_choices = [choice for choice in choices if choice in config.smash_characters]
+    added_characters = []
+    repeated_characters = []
+    for choice in valid_choices:
+        state = m_config[ctx.guild.id].add_character_2(ctx.guild.id, ctx.channel.id, choice, m_database)
+        if "already" in state.lower():
+            repeated_characters.append(choice)
+        else:
+            added_characters.append(choice)
+    
+    # Merge the messages for added characters and repeated characters into one message to avoid spamming the channel with multiple messages if multiple characters are added at once.    
+    final_message = ""
+    if added_characters:
+        final_message += f"Character(s) '{', '.join(added_characters)}' added to search!\n"
+    if repeated_characters:
+        final_message += f"Character(s) '{', '.join(repeated_characters)}' were already in the list.\n"
+    if len(valid_choices) < len(choices):
+        invalid_choices = [choice for choice in choices if choice not in config.smash_characters]
+        final_message += f"These characters are not valid and were not added: {', '.join(invalid_choices)}. Use !list_available_characters to see the list of valid characters."
+    await ctx.send(final_message)
     
 # Command to remove character from the list of characters to search for in the videos.
 @bot.command()
-async def remove_character_1(ctx, choice: str = None):
+async def remove_character_1(ctx, *choices: str):
     """Command to remove character from the list of characters to search for in the videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         choice (str, optional): The character to be removed. Defaults to None.
     """
-    if not choice or choice not in config.smash_characters.keys():
-        await ctx.send(f"Choose a valid character")
+    if not choices:
+        await ctx.send(f"No character(s) provided. Please provide a character to remove.")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot remove character while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, remove the character and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].remove_character_1(ctx.guild.id, ctx.channel.id, choice, m_database)
-    await ctx.send(state)
+    valid_choices = [choice for choice in choices if choice in config.smash_characters]
+    removed_characters = []
+    missing_characters = []
+    for choice in valid_choices:
+        state = m_config[ctx.guild.id].remove_character_1(ctx.guild.id, ctx.channel.id, choice, m_database)
+        if "removed" in state.lower():
+            removed_characters.append(choice)
+        elif "not found" in state.lower():
+            missing_characters.append(choice)
+            
+    final_message = ""
+    if removed_characters:
+        final_message += f"Character(s) '{', '.join(removed_characters)}' removed from search!\n"
+    if missing_characters:
+        final_message += f"Character(s) '{', '.join(missing_characters)}' were not in the list.\n"        
+    if len(valid_choices) < len(choices):
+        invalid_choices = [choice for choice in choices if choice not in config.smash_characters]
+        final_message += f"These characters are not valid and were not removed: {', '.join(invalid_choices)}. Use !list_available_characters to see the list of valid characters."
+    await ctx.send(final_message)
     
 # Command to remove character from the list of characters to search for in the videos.
 @bot.command()
-async def remove_character_2(ctx, choice: str = None):
+async def remove_character_2(ctx, *choices: str):
     """Command to remove character from the list of characters to search for in the videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         choice (str, optional): The character to be removed. Defaults to None.
     """
-    if not choice or choice not in config.smash_characters.keys():
-        await ctx.send(f"Choose a valid character")
+    if not choices:
+        await ctx.send(f"No character(s) provided. Please provide a character to remove.")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot remove character while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, remove the character and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].remove_character_2(ctx.guild.id, ctx.channel.id, choice, m_database)
-    await ctx.send(state)
+    valid_choices = [choice for choice in choices if choice in config.smash_characters]
+    removed_characters = []
+    missing_characters = []
+    for choice in valid_choices:
+        state = m_config[ctx.guild.id].remove_character_2(ctx.guild.id, ctx.channel.id, choice, m_database)
+        if "removed" in state.lower():
+            removed_characters.append(choice)
+        elif "not found" in state.lower():
+            missing_characters.append(choice)
     
+    final_message = ""
+    if removed_characters:
+        final_message += f"Character(s) '{', '.join(removed_characters)}' removed from search!\n"
+    if missing_characters:
+        final_message += f"Character(s) '{', '.join(missing_characters)}' were not in the list.\n"        
+    if len(valid_choices) < len(choices):
+        invalid_choices = [choice for choice in choices if choice not in config.smash_characters]
+        final_message += f"These characters are not valid and were not removed: {', '.join(invalid_choices)}. Use !list_available_characters to see the list of valid characters."
+    await ctx.send(final_message)
+    
+@bot.command()
+async def enforce_character_1(ctx, state: str):
+    """Command to enforce that character 1 is in the title of the video. 
+
+    Args:
+        ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
+        state (str): on/off to enable or disable enforcing player 1 in the title of the video.
+    """
+    if state.lower() not in ["on", "off"]:
+        await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
+        return
+    
+    m_config[ctx.guild.id].set_enforce_character_1(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    await ctx.send(f"Enforcing character 1 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
+
+async def enforce_character_2(ctx, state: str):
+    """Command to enforce that character 2 is in the title of the video.
+
+    Args:
+        ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
+        state (str): on/off to enable or disable enforcing player 2 in the title of the video.
+    """
+    if state.lower() not in ["on", "off"]:
+        await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
+        return
+    
+    m_config[ctx.guild.id].set_enforce_character_2(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    await ctx.send(f"Enforcing character 2 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
+
 @bot.command()
 async def list_characters(ctx):
     """Command to list characters added for player 1 and player 2.
@@ -385,42 +513,75 @@ async def list_available_characters(ctx):
 # You can add a channel by its ID (starting with UC) or by its @name. If you add it by @name, 
 # the bot will search for the channel and add it if it finds it.
 @bot.command()
-async def add_youtube_channel(ctx, channel: str = None):
+async def add_youtube_channel(ctx, *channels: str):
     """Command to add youtube channel to the list of channels to search for videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         channel (str, optional): The youtube channel to be added. Defaults to None.
     """
-    if not channel:
-        await ctx.send(f"Provide a youtube channel (Either the ID starting with UC or the @)")
+    if not channels:
+        await ctx.send(f"Provide youtube channel(s) (Either the ID starting with UC or the @)")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot add youtube channel while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, add the channel and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].add_youtube_channel(ctx.guild.id, ctx.channel.id, channel, youtube, m_database)
-    await ctx.send(state)
+    added_channels = []
+    repeated_channels = []
+    incorrect_channels = []
+    for channel in channels:
+        state = m_config[ctx.guild.id].add_youtube_channel(ctx.guild.id, ctx.channel.id, channel, youtube, m_database)
+        if "stored" in state.lower():
+            added_channels.append(channel)
+        elif "already" in state.lower():
+            repeated_channels.append(channel)
+        elif "not found" in state.lower() or "invalid" in state.lower():
+            incorrect_channels.append(channel)
+        
+            
+    # Merge the messages for added channels and repeated channels into one message to avoid spamming the channel with multiple messages if multiple channels are added at once.
+    final_message = ""
+    if added_channels:
+        final_message += f"Youtube channel(s) '{', '.join(added_channels)}' stored for search!\n"
+    if repeated_channels:
+        final_message += f"Youtube channel(s) '{', '.join(repeated_channels)}' were already in the list.\n"
+    if incorrect_channels:
+        final_message += f"These channels were not found or have an invalid format and were not added: {', '.join(incorrect_channels)}. Please provide a channel ID starting with 'UC' or a channel name starting with '@'."
+    await ctx.send(final_message)
     
 @bot.command()
-async def remove_youtube_channel(ctx, channel: str = None):
+async def remove_youtube_channel(ctx, *channels: str):
     """Command to remove youtube channel from the list of channels to search for videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         channel (str, optional): The youtube channel to be removed. Defaults to None.
     """
-    if not channel:
-        await ctx.send(f"Provide a youtube channel name (See your list with !list_youtube_channels)")
+    if not channels:
+        await ctx.send(f"Provide youtube channel(s) to remove (See your list with !list_youtube_channels)")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot remove youtube channel while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, remove the channel and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].remove_youtube_channel(ctx.guild.id, ctx.channel.id, channel, m_database)
-    await ctx.send(state)    
+    removed_channels = []
+    missing_channels = []
+    for channel in channels:
+        state = m_config[ctx.guild.id].remove_youtube_channel(ctx.guild.id, ctx.channel.id, channel, m_database)
+        if "removed" in state.lower():
+            removed_channels.append(channel)
+        elif "not found" in state.lower():
+            missing_channels.append(channel)
+    
+    final_message = ""
+    if removed_channels:
+        final_message += f"Youtube channel(s) '{', '.join(removed_channels)}' removed from search!\n"
+    if missing_channels:
+        final_message += f"Youtube channel(s) '{', '.join(missing_channels)}' were not in the list.\n"
+    await ctx.send(final_message)
 
 # Command to list youtube channels added. If there are more than 15 channels, it will paginate the list.
 @bot.command()
@@ -489,85 +650,172 @@ async def list_youtube_channels(ctx):
     
 # Command to add player to the list of players to search for in the videos.
 @bot.command()
-async def add_player_1(ctx, player: str = None):
+async def add_player_1(ctx, *players: str):
     """Command to add player to the list of players to search for in the videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         player (str, optional): The player to be added. Defaults to None.
     """
-    if not player:
-        await ctx.send(f"No player set.")
+    if not players:
+        await ctx.send(f"No player(s) set.")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot add player while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, add the player and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].add_player_1(ctx.guild.id, ctx.channel.id, player, m_database)
-    await ctx.send(state)
+    added_players = []
+    repeated_players = []
+    for player in players:
+        state = m_config[ctx.guild.id].add_player_1(ctx.guild.id, ctx.channel.id, player, m_database)
+        if "already" in state.lower():
+            repeated_players.append(player)
+        else:
+            added_players.append(player)
+    
+    # Merge the messages for added players and repeated players into one message to avoid spamming the channel with multiple messages if multiple players are added at once.
+    final_message = ""
+    if added_players:
+        final_message += f"Player(s) '{', '.join(added_players)}' stored for search!\n"
+    if repeated_players:
+        final_message += f"Player(s) '{', '.join(repeated_players)}' were already in the list.\n"
+    await ctx.send(final_message)
 
 # Command to add player to the list of players to search for in the videos.
 # If two players are added, the bot will search for videos that have both players in the title. 
 # If only one player is added, it will search for videos that have that player in the title.
 @bot.command()
-async def add_player_2(ctx, player: str = None):
+async def add_player_2(ctx, *players: str):
     """Command to add player to the list of players to search for in the videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         player (str, optional): The player to be added. Defaults to None.
     """
-    if not player:
-        await ctx.send(f"No player set.")
+    if not players:
+        await ctx.send(f"No player(s) set.")
         return
     
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot add player while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, add the player and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].add_player_2(ctx.guild.id, ctx.channel.id, player, m_database)
-    await ctx.send(state)
+    added_players = []
+    repeated_players = []
+    for player in players:
+        state = m_config[ctx.guild.id].add_player_2(ctx.guild.id, ctx.channel.id, player, m_database)
+        if "already" in state.lower():
+            repeated_players.append(player)
+        else:
+            added_players.append(player)
+    
+    # Merge the messages for added players and repeated players into one message to avoid spamming the channel with multiple messages if multiple players are added at once.
+    final_message = ""
+    if added_players:
+        final_message += f"Player(s) '{', '.join(added_players)}' stored for search!\n"
+    if repeated_players:
+        final_message += f"Player(s) '{', '.join(repeated_players)}' were already in the list.\n"
+    await ctx.send(final_message)
 
 # Command to remove player from the list of players to search for in the videos.
 @bot.command()
-async def remove_player_1(ctx, player: str = None):
+async def remove_player_1(ctx, *players: str):
     """Command to remove player from the list of players to search for in the videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         player (str, optional): The player to be removed. Defaults to None.
     """
-    if not player:
-        await ctx.send(f"No player set.")
+    if not players:
+        await ctx.send(f"No player(s) set.")
         return
 
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot remove player while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, remove the player and then start the video gathering again with !get_old_videos command.")
         return 
         
-    state = m_config[ctx.guild.id].remove_player_1(ctx.guild.id, ctx.channel.id, player, m_database)
-    await ctx.send(state)
+    removed_players = []
+    missing_players = []
+    for player in players:
+        state = m_config[ctx.guild.id].remove_player_1(ctx.guild.id, ctx.channel.id, player, m_database)
+        if "removed" in state.lower():
+            removed_players.append(player)
+        elif "not found" in state.lower():
+            missing_players.append(player)
+    
+    # Merge the messages for removed players and missing players into one message to avoid spamming the channel with multiple messages if multiple players are removed at once.
+    final_message = ""
+    if removed_players:
+        final_message += f"Player(s) '{', '.join(removed_players)}' removed from search!\n"
+    if missing_players:
+        final_message += f"Player(s) '{', '.join(missing_players)}' were not found in the list.\n"
+    await ctx.send(final_message)
 
 # Command to remove player from the list of players to search for in the videos.  
 @bot.command()
-async def remove_player_2(ctx, player: str = None):
+async def remove_player_2(ctx, *players: str):
     """Command to remove player from the list of players to search for in the videos.
 
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
         player (str, optional): The player to be removed. Defaults to None.
     """
-    if not player:
-        await ctx.send(f"No player set.")
+    if not players:
+        await ctx.send(f"No player(s) set.")
         return
 
     if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
         await ctx.send(f"Cannot remove player while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, remove the player and then start the video gathering again with !get_old_videos command.")
         return
     
-    state = m_config[ctx.guild.id].remove_player_2(ctx.guild.id, ctx.channel.id, player, m_database)
-    await ctx.send(state)
+    removed_players = []
+    missing_players = []
+    for player in players:
+        state = m_config[ctx.guild.id].remove_player_2(ctx.guild.id, ctx.channel.id, player, m_database)
+        if "removed" in state.lower():
+            removed_players.append(player)
+        elif "not found" in state.lower():
+            missing_players.append(player)
+    
+    # Merge the messages for removed players and missing players into one message to avoid spamming the channel with multiple messages if multiple players are removed at once.
+    final_message = ""
+    if removed_players:
+        final_message += f"Player(s) '{', '.join(removed_players)}' removed from search!\n"
+    if missing_players:
+        final_message += f"Player(s) '{', '.join(missing_players)}' were not found in the list.\n"
+    await ctx.send(final_message)
+
+@bot.command()
+async def enforce_player_1(ctx, state: str):
+    """Command to enforce that player 1 is in the title of the video.
+
+    Args:
+        ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
+        state (str): on/off to enable or disable enforcing player 1 in the title of the video.
+    """
+    if state.lower() not in ["on", "off"]:
+        await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
+        return
+    
+    m_config[ctx.guild.id].set_enforce_player_1(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    await ctx.send(f"Enforcing player 1 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
+    
+@bot.command()
+async def enforce_player_2(ctx, state: str):
+    """Command to enforce that player 2 is in the title of the video.
+
+    Args:
+        ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
+        state (str): on/off to enable or disable enforcing player 2 in the title of the video.
+    """
+    if state.lower() not in ["on", "off"]:
+        await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
+        return
+    
+    m_config[ctx.guild.id].set_enforce_player_2(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    await ctx.send(f"Enforcing player 2 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
+
 
 # Command to list players added for player 1 and player 2.
 @bot.command()
@@ -729,14 +977,20 @@ async def help(ctx):
     )
     
     embed.add_field(
-        name="📺 !add_character_1 [charactername] / !add_character_2[charactername] ",
-        value="Adds character to search for player 1 / player 2. You have to add the character in English, but in the search it will use its name in different languages",
+        name="📺 !add_character_1 [charactername(s)] / !add_character_2 [charactername(s)] ",
+        value="Adds character(s) to search for player 1 / player 2. You have to add the character in English, but in the search it will use its name in different languages. You can add multiple characters at once by separating them with a space (e.g. !add_character_1 Mario Luigi Peach). Characters with spaces in their names should be added with "" instead of spaces (e.g. Mr. Game & Watch should be added as \"Mr. Game & Watch\").",
         inline=False
     )
     
     embed.add_field(
-        name="📺 !remove_character_1 [charactername] / !remove_character_2 [charactername]",
-        value="Removes character to search for player 1 / player 2. You have to add the character in English, but in the search it will use its name in different languages",
+        name="📺 !remove_character_1 [charactername(s)] / !remove_character_2 [charactername(s)]",
+        value="Removes character(s) to search for player 1 / player 2. You have to add the character in English, but in the search it will use its name in different languages. You can remove multiple characters at once by separating them with a space (e.g. !remove_character_1 Mario Luigi Peach). Characters with spaces in their names should be removed with "" instead of spaces (e.g. Mr. Game & Watch should be removed as \"Mr. Game & Watch\").",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📺 !enforce_character_1 / !enforce_character_2",
+        value="Enables or disables enforcing that the character is in the title of the video. Some videos won't have characters on the title, so its useful in case you are searching for match ups with players and characters and some videos specify which characters are being played and others not",
         inline=False
     )
     
@@ -753,14 +1007,20 @@ async def help(ctx):
     )
 
     embed.add_field(
-        name="📺 !add_player_1 [playername] / !add_player_2 [playername]",
-        value="Adds player to search for player 1 / player 2",
+        name="📺 !add_player_1 [playername(s)] / !add_player_2 [playername(s)]",
+        value="Adds player(s) to search for player 1 / player 2. You can add multiple players at once by separating them with a space (e.g. !add_player_1 MKLeo Tweek Zackray)",
         inline=False
     )
     
     embed.add_field(
-        name="📺 !remove_player_1 [playername] / !remove_player_2 [playername]",
-        value="Removes player to search for player 1 / player 2",
+        name="📺 !remove_player_1 [playername(s)] / !remove_player_2 [playername(s)]",
+        value="Removes player(s) to search for player 1 / player 2. You can remove multiple players at once by separating them with a space (e.g. !remove_player_1 MKLeo Tweek Zackray)",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📺 !enforce_player_1 / !enforce_player_2",
+        value="Enables or disables enforcing that the player is in the title of the video. This is useful for example, if you want to search VODs for a match up between two players, but only make sure that one of them is in the title of the video. This will allow to search (if characters are set) for videos that have the character and at least one of the player names (if enforced)",
         inline=False
     )
     
@@ -772,13 +1032,13 @@ async def help(ctx):
 
     embed.add_field(
         name="📺 !add_youtube_channel [ID]",
-        value="Adds youtube channel to the list of channels to get vods from. A default list is already provided with big channels",
+        value="Adds youtube channel(s) to the list of channels to get vods from. A default list is already provided with big channels. You can add a channel by its ID (starting with UC) or by its @name. If you add it by @name, the bot will search for the channel and add it if it finds it. You can add multiple channels at once by separating them with a space (e.g. !add_youtube_channel @channel1 @channel2 UCchannelID)",
         inline=False
     )
     
     embed.add_field(
         name="📺 !remove_youtube_channel [Name]",
-        value="Removes youtube channel from the list of channels to get vods from. Use !list_youtube_channels to see the list of channels you added",
+        value="Removes youtube channel(s) from the list of channels to get vods from. Use !list_youtube_channels to see the list of channels you added. Removing is done by channel names. You can remove multiple channels at once by separating them with a space (e.g. !remove_youtube_channel channel1 channel2)",
         inline=False
     )
     
