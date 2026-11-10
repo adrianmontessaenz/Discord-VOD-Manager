@@ -1,7 +1,13 @@
 import sqlite3
 import os
 
-class MyDatabase:
+class SqliteGuildSettingsRepository:
+    """Per-server settings (channels, filters, YouTube sources) and publication history.
+
+    Stays in Ratatoskr. The table `channel_videos` is the publication history
+    (what was already posted to each Discord channel), not the VOD catalogue.
+    """
+
     def __init__(self, db_path="data/database.db"):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
@@ -182,21 +188,21 @@ class MyDatabase:
         DELETE FROM channel_youtube WHERE guild_id = ? AND channel_id = ? AND youtube_channel_id = ?""", (guild_id, channel_id, youtube_channel_id))
         self.conn.commit()
     
-    def add_video(self, guild_id, channel_id, video_id, title, url, published_at):
-        """Add a video to a channel."""
+    def add_published(self, guild_id, channel_id, video_id, title, url, published_at):
+        """Record that a video was posted to a channel."""
         self.cursor.execute("""
         INSERT OR IGNORE INTO channel_videos (guild_id, channel_id, video_id, title, url, published_at)
         VALUES (?, ?, ?, ?, ?, ?)""", (guild_id, channel_id, video_id, title, url, published_at))
         self.conn.commit()
         
-    def remove_video_by_url(self, guild_id, channel_id, video_url):
-        """Remove a video from a channel."""
+    def remove_published_by_url(self, guild_id, channel_id, video_url):
+        """Forget a posted video (by URL) for a channel."""
         self.cursor.execute("""
         DELETE FROM channel_videos WHERE guild_id = ? AND channel_id = ? AND url = ?""", (guild_id, channel_id, video_url))
         self.conn.commit()
     
-    def get_videos(self, guild_id, channel_id):
-        """Get all videos for a channel."""
+    def get_published(self, guild_id, channel_id):
+        """Get the videos already posted to a channel."""
         self.cursor.execute("""
         SELECT video_id, title, url, published_at FROM channel_videos
         WHERE guild_id = ? AND channel_id = ?""", (guild_id, channel_id))

@@ -208,3 +208,9 @@ __marimo__/
 
 # SQLite database files
 *.db
+
+# Ecosystem (Phase 0) - Claude files are local; working docs live in .claude/docs/
+.claude/
+CLAUDE.md
+# Secrets: never versioned. Keep the example file tracked.
+!.env.example

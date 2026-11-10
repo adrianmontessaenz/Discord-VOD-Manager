@@ -18,7 +18,7 @@ from discord.ext import commands
 import json
 # From internal files
 import config
-import database
+from repositories import SqliteGuildSettingsRepository, SqliteVodRepository
 
 # Load environment variables from .env file
 load_dotenv()
@@ -40,7 +40,8 @@ bot.remove_command("help")
 # Setup global variables to store config and tasks for each guild and channel.
 m_config = {}
 m_guild_tasks = {}
-m_database = database.MyDatabase()
+m_database = SqliteGuildSettingsRepository()  # server settings + publication history (stays in Ratatoskr)
+m_vods = SqliteVodRepository()  # VOD catalogue (goes to Yggdrasil in Phase 1)
 
 # ------------ Helper functions -------------
 async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = False):
@@ -55,8 +56,8 @@ async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = Fa
         _type_: None
     """
     # Gather database videos and then fetch new videos from youtube into the database. This way, we can compare the videos and show which ones are new and which ones were already sent before.
-    database_videos = m_database.get_videos(ctx.guild.id, ctx.channel.id)
-    video_list = await asyncio.to_thread(m_config[ctx.guild.id].get_old_videos, ctx.guild.id, ctx.channel.id, youtube, date, m_database)
+    database_videos = m_database.get_published(ctx.guild.id, ctx.channel.id)
+    video_list = await asyncio.to_thread(m_config[ctx.guild.id].get_old_videos, ctx.guild.id, ctx.channel.id, youtube, date, m_database, m_vods)
     
     # Incorrect date format, return error message
     if len(video_list) == 1 and "error" in video_list[0]:
@@ -220,7 +221,7 @@ async def on_message_deleted(message):
         if "http" not in message.content:
             return
         url = ["http" + part for part in message.content.split("http")[1:]]  # Get all links in the message (When sending youtube links, bot only sends one link per message)
-        m_database.remove_video_by_url(message.guild.id, message.channel.id, url)
+        m_database.remove_published_by_url(message.guild.id, message.channel.id, url)
 
 # ------------- Commands -------------
 # Simple command to test the bot is working and responding 

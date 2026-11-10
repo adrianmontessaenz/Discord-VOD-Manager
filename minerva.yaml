@@ -1,0 +1,13 @@
+name: Ratatoskr                  # codename (god), plain ASCII as in the repo name
+subtitle: Smash VODs for Discord
+repo: Discord-VOD-Manager
+group: Smash
+mythology: Norse
+tree: Yggdrasil
+status: in development        # idea | in development | mvp | stable | paused
+phase: "Phase 0 (ecosystem preparation); next: Phase 1 (store VODs in Yggdrasil)"
+version: 0.3.0
+platforms: [Discord bot, Docker (dev image)]
+technologies: [Python 3.11+, discord.py, YouTube Data API v3, SQLite, python-dotenv, pytest]
+depends_on: [YouTube Data API v3, Discord API, Yggdrasil (future)]
+documents: { roadmap: docs/roadmap.md, architecture: docs/architecture.md, changelog: CHANGELOG.md }

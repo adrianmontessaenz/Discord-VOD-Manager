@@ -1,8 +1,7 @@
 from datetime import datetime, timezone
 import json
 import os
-import sqlite3
-import database
+from repositories import SqliteGuildSettingsRepository, Vod
 
 smash_characters={}
 
@@ -34,7 +33,7 @@ class MyConfig:
         """Initialize the configuration for all channels."""
         self._my_channels = {}
         
-    def _add_new_channel(self, id: int, guild_id: int, database: database.MyDatabase = None):
+    def _add_new_channel(self, id: int, guild_id: int, database: SqliteGuildSettingsRepository = None):
         """Add a new channel to the configuration. 
         It will create a new instance of _MyChannels for the channel and store it in the dictionary.
 
@@ -71,7 +70,7 @@ class MyConfig:
         self._my_channels[id].enforce_player_2 = enforce_variables["enforce_player_2"] if "enforce_player_2" in enforce_variables else True
         self._my_channels[id].youtube_channels = youtube_channels
     
-    def remove_channel(self, guild_id: int, id: int, database: database.MyDatabase = None):
+    def remove_channel(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Remove a channel from the configuration. 
         It will remove the instance of _MyChannels for the channel from the dictionary.
 
@@ -82,7 +81,7 @@ class MyConfig:
             self._my_channels.pop(id)
             database.remove_channel(guild_id, id)
             
-    def add_character_1(self, guild_id: int, id: int, char: str, database: database.MyDatabase = None):
+    def add_character_1(self, guild_id: int, id: int, char: str, database: SqliteGuildSettingsRepository = None):
         """Add a character to the list of characters to search for in the videos.
 
         Args:
@@ -98,7 +97,7 @@ class MyConfig:
         database.add_character_1(guild_id, id, char)
         return f"Character '{char}' was stored"
     
-    def add_character_2(self, guild_id: int, id: int, char: str, database: database.MyDatabase = None):
+    def add_character_2(self, guild_id: int, id: int, char: str, database: SqliteGuildSettingsRepository = None):
         """Add a character to the list of characters to search for in the videos.
 
         Args:
@@ -114,7 +113,7 @@ class MyConfig:
         database.add_character_2(guild_id, id, char)
         return f"Character '{char}' was stored"
         
-    def remove_character_1(self, guild_id: int, id: int, char: str, database: database.MyDatabase = None):
+    def remove_character_1(self, guild_id: int, id: int, char: str, database: SqliteGuildSettingsRepository = None):
         """Remove a character from the list of characters to search for in the videos.
 
         Args:
@@ -132,7 +131,7 @@ class MyConfig:
             return f"Character '{char}' was removed from search"
         return f"Character '{char}' was not found in search"
             
-    def remove_character_2(self, guild_id: int, id: int, char: str, database: database.MyDatabase = None):
+    def remove_character_2(self, guild_id: int, id: int, char: str, database: SqliteGuildSettingsRepository = None):
         """Remove a character from the list of characters to search for in the videos.
 
         Args:
@@ -149,7 +148,7 @@ class MyConfig:
             return f"Character '{char}' was removed from search"
         return f"Character '{char}' was not found in search"
             
-    def get_characters_1(self, guild_id: int, id: int, database: database.MyDatabase = None):
+    def get_characters_1(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Get the list of characters to search for in the videos for a specific channel.
 
         Args:
@@ -162,7 +161,7 @@ class MyConfig:
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].characters_1
     
-    def get_characters_2(self, guild_id: int, id: int, database: database.MyDatabase = None):
+    def get_characters_2(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Get the list of characters to search for in the videos for a specific channel.
 
         Args:
@@ -175,7 +174,7 @@ class MyConfig:
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].characters_2
     
-    def enforce_character_1(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+    def enforce_character_1(self, guild_id: int, id:int, state: bool, database: SqliteGuildSettingsRepository = None):
         """Set the enforce_characters flag for a specific channel. 
         This flag is used to determine if the bot should enforce that the characters are also in the title of the videos.
          
@@ -190,7 +189,7 @@ class MyConfig:
         database.set_enforce_character_1(guild_id, id, state)
     
         
-    def enforce_character_2(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+    def enforce_character_2(self, guild_id: int, id:int, state: bool, database: SqliteGuildSettingsRepository = None):
         """Set the enforce_characters flag for a specific channel. 
         This flag is used to determine if the bot should enforce that the characters are also in the title of the videos.
          
@@ -204,7 +203,7 @@ class MyConfig:
         self._my_channels[id].enforce_character_2 = state
         database.set_enforce_character_2(guild_id, id, state)
         
-    def add_youtube_channel(self, guild_id: int, id: int, yt: str, youtube, database: database.MyDatabase = None):
+    def add_youtube_channel(self, guild_id: int, id: int, yt: str, youtube, database: SqliteGuildSettingsRepository = None):
         """Add a youtube channel to the list of channels to search for videos.
          You can add a channel by its ID (starting with UC) or by its @name. 
          If you add it by @name, the bot will search for the channel and add it if it finds it.
@@ -247,7 +246,7 @@ class MyConfig:
         database.add_youtube_channel(guild_id, id, items[0]["snippet"]["channelId"], items[0]["snippet"]["title"])
         return f"Channel '{yt}' was stored"
     
-    def remove_youtube_channel(self, guild_id: int, id: int, yt: str, database: database.MyDatabase = None):
+    def remove_youtube_channel(self, guild_id: int, id: int, yt: str, database: SqliteGuildSettingsRepository = None):
         """Remove a youtube channel from the list of channels to search for videos.
 
         Args:
@@ -265,7 +264,7 @@ class MyConfig:
             return f"Channel '{yt}' was removed from search"
         return f"Channel '{yt}' was not found in search"
         
-    def get_youtube_channels(self, guild_id: int, id: int, database: database.MyDatabase = None):
+    def get_youtube_channels(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Get the list of YouTube channels for a specific channel.
 
         Args:
@@ -278,7 +277,7 @@ class MyConfig:
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].youtube_channels.keys()
 
-    def add_player_1(self, guild_id: int, id: int, player: str, database: database.MyDatabase = None):
+    def add_player_1(self, guild_id: int, id: int, player: str, database: SqliteGuildSettingsRepository = None):
         """Add a player to the list of players for a specific channel.
 
         Args:
@@ -296,7 +295,7 @@ class MyConfig:
         database.add_player_1(guild_id, id, player)
         return f"Player '{player}' was stored"
         
-    def add_player_2(self, guild_id: int, id: int, player: str, database: database.MyDatabase = None):
+    def add_player_2(self, guild_id: int, id: int, player: str, database: SqliteGuildSettingsRepository = None):
         """Add a player to the list of players for a specific channel.
 
         Args:
@@ -313,7 +312,7 @@ class MyConfig:
         database.add_player_2(guild_id, id, player)
         return f"Player '{player}' was stored"
     
-    def remove_player_1(self, guild_id: int, id: int, player: str, database: database.MyDatabase = None):
+    def remove_player_1(self, guild_id: int, id: int, player: str, database: SqliteGuildSettingsRepository = None):
         """Remove a player from the list of players for a specific channel.
 
         Args:
@@ -331,7 +330,7 @@ class MyConfig:
             return f"Player '{player}' was removed from search"
         return f"Player '{player}' was not found in search"
     
-    def remove_player_2(self, guild_id: int, id: int, player: str, database: database.MyDatabase = None):
+    def remove_player_2(self, guild_id: int, id: int, player: str, database: SqliteGuildSettingsRepository = None):
         """Remove a player from the list of players for a specific channel.
 
         Args:
@@ -348,7 +347,7 @@ class MyConfig:
             return f"Player '{player}' was removed from search"
         return f"Player '{player}' was not found in search"
     
-    def enforce_player_1(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+    def enforce_player_1(self, guild_id: int, id:int, state: bool, database: SqliteGuildSettingsRepository = None):
         """Set the enforce_player_1 flag for a specific channel. 
         This flag is used to determine if the bot should enforce that player 1 is also in the title of the videos.
          
@@ -362,7 +361,7 @@ class MyConfig:
         self._my_channels[id].enforce_player_1 = state
         database.set_enforce_player_1(guild_id, id, state)
         
-    def enforce_player_2(self, guild_id: int, id:int, state: bool, database: database.MyDatabase = None):
+    def enforce_player_2(self, guild_id: int, id:int, state: bool, database: SqliteGuildSettingsRepository = None):
         """Set the enforce_player_2 flag for a specific channel. 
         This flag is used to determine if the bot should enforce that player 2 is also in the title of the videos.
          
@@ -376,7 +375,7 @@ class MyConfig:
         self._my_channels[id].enforce_player_2 = state
         database.set_enforce_player_2(guild_id, id, state)
             
-    def get_players_1(self, guild_id: int, id: int, database: database.MyDatabase = None):
+    def get_players_1(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Get the list of players for a specific channel.
 
         Args:
@@ -389,7 +388,7 @@ class MyConfig:
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].players_1
     
-    def get_players_2(self, guild_id: int, id: int, database: database.MyDatabase = None):
+    def get_players_2(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Get the list of players for a specific channel.
 
         Args:
@@ -402,7 +401,7 @@ class MyConfig:
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].players_2
     
-    def get_old_videos(self, guild_id: int, id: int, youtube, date: str = None, database: database.MyDatabase = None):
+    def get_old_videos(self, guild_id: int, id: int, youtube, date: str = None, database: SqliteGuildSettingsRepository = None, vod_repository=None):
         """Get old videos for a specific channel.
 
         Args:
@@ -519,7 +518,10 @@ class MyConfig:
                                 "url": url,
                                 "publishedAt": published_at
                             })
-                        database.add_video(guild_id, id, video_id, title, url, published_at)
+                        database.add_published(guild_id, id, video_id, title, url, published_at)
+                        if vod_repository is not None:
+                            vod_repository.save(Vod(video_id=video_id, title=title, url=url, published_at=published_at,
+                                                    youtube_channel_id=self._my_channels[id].youtube_channels[youtube_channel]))
                 
                 # Skip to next page of videos
                 next_page_token = res.get("nextPageToken")
