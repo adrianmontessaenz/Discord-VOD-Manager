@@ -1,7 +1,7 @@
 # Roadmap — Ratatoskr
 
 ## Vision
-Ratatoskr is a Discord bot that watches YouTube channels for Super Smash Bros. tournament uploads and posts the VODs each server cares about, filtered by players and characters. Like the squirrel that runs up and down Yggdrasil carrying messages, it carries VODs to the people who want them. Within the Smash group it will store the VODs it finds in Yggdrasil, keeping only each server's settings and what it already posted.
+Ratatoskr is a Discord bot that watches YouTube channels for Super Smash Bros. tournament uploads and posts the VODs each server cares about, filtered by players and characters. Like the squirrel that runs up and down Yggdrasil carrying messages, it carries VODs to the people who want them. Within the Smash group Yggdrasil will query YouTube itself: Ratatoskr registers the watched channels there and reads the new VODs, keeping only each server's settings, filters and what it already posted.
 
 ## MVP
 Status according to the code (not the README):
@@ -28,10 +28,10 @@ Status according to the code (not the README):
 - **Tasks:** fix the unticked MVP items above; pin dependencies; make the Docker image start the bot; add tests for filters and commands; parse players, characters and tournament out of titles into `Vod`.
 - **Done when:** all MVP boxes are ticked and the tests pass.
 
-### M2 — Store and read VODs in Yggdrasil (Phase 1)
-- **Goal:** keep the VOD catalogue in Yggdrasil instead of the local database.
-- **Tasks:** implement an Yggdrasil API implementation of `VodRepository` (per-app token, via Tailscale); keep `SqliteVodRepository` as local fallback; shared contract tests for both; keep server settings and publication history local.
-- **Done when:** saving and reading VODs through Yggdrasil returns the same results as the local repository.
+### M2 — Register channels in Yggdrasil and read their VODs (Phase 1)
+- **Goal:** Ratatoskr stops calling YouTube; Yggdrasil watches the channels and holds the VOD catalogue.
+- **Tasks:** register the watched YouTube channels in Yggdrasil (`/v1/sources/youtube`); read new VODs with `GET /v1/vods?since=<revision>`, keeping the last revision read, and apply each server's filters (players, characters) locally; implement an Yggdrasil API implementation of `VodRepository` (per-app token, via Tailscale); remove the YouTube client and `YOUTUBE_API_KEY` from Ratatoskr once it works; keep `SqliteVodRepository` as local fallback; shared contract tests for both; keep configuration, filters and publication history in local SQLite.
+- **Done when:** Ratatoskr posts the same VODs from Yggdrasil as it did from YouTube, without making any call to YouTube.
 
 ### M3 — Turn the bot into an application (Phase 2)
 - **Goal:** let Ratatoskr be used and configured as an app, not only through Discord commands.

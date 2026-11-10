@@ -41,7 +41,7 @@ Outside the database: `.env` (`DISCORD_BOT_TOKEN`, `YOUTUBE_API_KEY`, git-ignore
 
 ## External dependencies
 - **Discord API**: bot token from `DISCORD_BOT_TOKEN`; needs the message content intent.
-- **YouTube Data API v3**: API key from `YOUTUBE_API_KEY`; quota-limited. Used for the channel uploads playlist and channel search.
+- **YouTube Data API v3**: API key from `YOUTUBE_API_KEY`; quota-limited. Used for the channel uploads playlist and channel search. Today only; in Phase 1 Yggdrasil takes over and Ratatoskr stops calling YouTube.
 - Libraries: `discord.py`, `google-api-python-client`, `python-dotenv` (unpinned in `requirements.txt`); `pytest` for tests.
 
 ## Ecosystem integration
@@ -51,13 +51,17 @@ Ratatoskr belongs to the Smash group; its tree is **Yggdrasil** (own API + Postg
 |---|---|---|
 | VODs (video, YouTube channel, date, players, characters, tournament) | Yggdrasil | Shared with other Smash apps (Tyr, Mimir, Odín). |
 | Server and channel configuration | Stays in Ratatoskr | Policy of each Discord server. |
-| Filters (players, characters, YouTube sources, `enforce_*`) | Stays in Ratatoskr | Per-server preferences, not shared data. |
+| Watched YouTube channels (global list) | Yggdrasil (`/v1/sources/youtube`) | Yggdrasil queries YouTube; Ratatoskr only registers the channels. Each server's choice of channels stays local. |
+| Filters (players, characters, `enforce_*`) | Stays in Ratatoskr | Per-server preferences, applied locally over the VODs read. |
 | Publication history (what was posted where) | Stays in Ratatoskr | Specific to Discord messages. |
-| Discord token and YouTube key | Stays in Ratatoskr (secrets later in Portunus) | Secrets never go to git or to a tree. |
+| Discord token | Stays in Ratatoskr (secrets later in Portunus) | Secrets never go to git or to a tree. The YouTube key moves to Yggdrasil in Phase 1. |
 
-**Access interface needed:** `VodRepository` (`save`, `get`, `list`). Today `SqliteVodRepository` implements it locally; in Phase 1 an Yggdrasil API client will implement the same interface, with the SQLite one as fallback and shared contract tests. `GuildSettingsRepository` stays SQLite.
+**YouTube is queried by Yggdrasil, not by Ratatoskr.** From Phase 1 Ratatoskr no longer calls YouTube (nor needs `YOUTUBE_API_KEY`). It registers the watched channels in Yggdrasil (`/v1/sources/youtube`) and reads new VODs with `GET /v1/vods?since=<revision>`, applying each server's player and character filters locally. Configuration, filters and publication history stay in its SQLite.
+
+**Access interface needed:** `VodRepository` (`save`, `get`, `list`). Today `SqliteVodRepository` implements it locally; in Phase 1 an Yggdrasil API client will implement the same interface (reading by revision, registering channels), with the SQLite one as fallback and shared contract tests. `GuildSettingsRepository` stays SQLite.
 
 ## Decisions
+- Yggdrasil queries YouTube itself; Ratatoskr registers channels in `/v1/sources/youtube`, reads VODs with `GET /v1/vods?since=<revision>` and filters per server locally. Configuration, filters and publication history stay in SQLite (2026-11-10).
 - Split the code into `VodRepository` and the settings repository, with the same SQLite file and no data migration (2026-11-10).
 - Kept the table `channel_videos` as publication history and added a separate `vods` table, so existing databases keep working (2026-11-10).
 - Did not fix the known bugs listed in the roadmap; Phase 0 only reorganises code (2026-11-10).
