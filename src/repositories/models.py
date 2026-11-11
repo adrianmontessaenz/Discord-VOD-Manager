@@ -18,3 +18,4 @@ class Vod:
     players: Tuple[str, ...] = field(default_factory=tuple)
     characters: Tuple[str, ...] = field(default_factory=tuple)
     tournament: Optional[str] = None
+    revision: int = 0

@@ -12,12 +12,12 @@ Status according to the code (not the README):
 - [x] Commands to add, remove and list players, characters and YouTube channels, with paginated embeds.
 - [x] `!get_old_videos` fetches the history (back to 2019) sorted oldest first; `!update_frequently` polls every 15 minutes.
 - [x] Repository layer separating VODs from server settings and publication history.
-- [ ] Character filter works: `_MyChannels.enforce_characters` does not exist, so any video that fails the character match raises `AttributeError`.
-- [ ] `enforce_*` commands work: they call `set_enforce_*` methods that do not exist in `MyConfig`; `enforce_character_2` is not registered as a command.
-- [ ] Duplicate posts are prevented: `get_published` returns rows that are compared with URLs, so every video counts as new.
-- [ ] Deleting a bot message removes it from the history: `on_message_deleted` is not a discord.py event (`on_message_delete`) and a list is passed as SQL parameter.
-- [ ] `!remove_youtube_channel`, `!add_youtube_channel` by `UC` id and `on_ready` with several servers work (known `KeyError`, dict/list mix-up and an early `return`).
-- [ ] Automated tests cover the commands and filters (only the repositories have tests).
+- [x] Character filter works (`src/filters.py`, tested).
+- [x] `enforce_*` commands work and `enforce_character_2` is registered.
+- [x] Duplicate posts are prevented (claim-before-send on `(guild, channel, video_id)`, tested across restarts).
+- [x] Deleting a bot message removes it from the history (`on_message_delete`, one URL at a time).
+- [x] `!remove_youtube_channel`, `!add_youtube_channel` by `UC` id and `on_ready` with several servers work.
+- [ ] Automated tests cover the Discord commands (repositories, Yggdrasil client, filters, sync and channel sources are tested; `bot.py` is not).
 - [ ] Docker image runs the bot (it ends in `CMD ["bash"]`) and dependencies are pinned.
 - [x] README describes the current app.
 
@@ -28,10 +28,11 @@ Status according to the code (not the README):
 - **Tasks:** fix the unticked MVP items above; pin dependencies; make the Docker image start the bot; add tests for filters and commands; parse players, characters and tournament out of titles into `Vod`.
 - **Done when:** all MVP boxes are ticked and the tests pass.
 
-### M2 — Register channels in Yggdrasil and read their VODs (Phase 1)
+### M2 — Register channels in Yggdrasil and read their VODs (Phase 1) — implemented, pending a live check
 - **Goal:** Ratatoskr stops calling YouTube; Yggdrasil watches the channels and holds the VOD catalogue.
 - **Tasks:** register the watched YouTube channels in Yggdrasil (`/v1/sources/youtube`); read new VODs with `GET /v1/vods?since=<revision>`, keeping the last revision read, and apply each server's filters (players, characters) locally; implement an Yggdrasil API implementation of `VodRepository` (per-app token, via Tailscale); remove the YouTube client and `YOUTUBE_API_KEY` from Ratatoskr once it works; keep `SqliteVodRepository` as local fallback; shared contract tests for both; keep configuration, filters and publication history in local SQLite.
 - **Done when:** Ratatoskr posts the same VODs from Yggdrasil as it did from YouTube, without making any call to YouTube.
+- **Status:** implemented and tested against a fake Yggdrasil. Still to do: a smoke test against a real Yggdrasil and Discord.
 
 ### M3 — Turn the bot into an application (Phase 2)
 - **Goal:** let Ratatoskr be used and configured as an app, not only through Discord commands.

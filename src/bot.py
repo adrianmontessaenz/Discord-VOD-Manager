@@ -9,24 +9,26 @@ Created: 2026-02-09
 # Import list.
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 # From external libraries
 import discord
-from googleapiclient.discovery import build
-from discord.ext import commands
-import json
+from discord.ext import commands, tasks
 # From internal files
 import config
-from repositories import SqliteGuildSettingsRepository, SqliteVodRepository
+from repositories import (SqliteGuildSettingsRepository, SqliteSyncStateRepository, SqliteVodRepository,
+                          YggdrasilClient, YggdrasilError, YggdrasilUnavailable, build_vod_repository)
+from filters import vod_matches
+from vod_sync import publish_new_vods, format_vod, urls_in_message
 
 # Load environment variables from .env file
 load_dotenv()
 DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN")
-YOUTUBE_API_KEY=os.getenv("YOUTUBE_API_KEY")
+YGGDRASIL_URL=os.getenv("YGGDRASIL_URL")
+YGGDRASIL_TOKEN=os.getenv("YGGDRASIL_TOKEN")
 
-# Initialize YouTube API client
-youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+# Yggdrasil client (channel sources and history). None when Yggdrasil is not configured.
+m_yggdrasil = YggdrasilClient(YGGDRASIL_URL, YGGDRASIL_TOKEN) if YGGDRASIL_URL and YGGDRASIL_TOKEN else None
 
 # Initialize Discord bot with intents
 intents = discord.Intents.default()
@@ -41,9 +43,71 @@ bot.remove_command("help")
 m_config = {}
 m_guild_tasks = {}
 m_database = SqliteGuildSettingsRepository()  # server settings + publication history (stays in Ratatoskr)
-m_vods = SqliteVodRepository()  # VOD catalogue (goes to Yggdrasil in Phase 1)
+m_vods = SqliteVodRepository()  # local VOD cache (fallback when Yggdrasil is down)
+m_source = build_vod_repository()  # where VODs are read from: Yggdrasil, or the local cache if not configured
+m_sync_state = SqliteSyncStateRepository()  # revision cursor of the automatic sync
+
+SYNC_MINUTES = 15
+
 
 # ------------ Helper functions -------------
+def other_users_of(channel_id: str) -> bool:
+    """True if any local text channel (any guild) still uses this YouTube channel."""
+    for cfg in m_config.values():
+        if cfg.uses_youtube_channel(channel_id):
+            return True
+    return False
+
+
+async def send_to_channel(guild_id: int, channel_id: int, text: str) -> bool:
+    """Send function used by the automatic sync. False if the Discord channel is unreachable."""
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        return False
+    try:
+        await channel.send(text)
+    except discord.Forbidden:
+        return False
+    return True
+
+
+@tasks.loop(minutes=SYNC_MINUTES)
+async def vod_sync_loop():
+    """One tick of the automatic VOD publication for every channel with auto_update enabled."""
+    targets = []
+    for guild_id, channel_id in m_database.list_auto_update_channels():
+        if guild_id not in m_config:
+            continue
+        targets.extend(m_config[guild_id].targets(guild_id, [channel_id], m_database))
+    try:
+        await publish_new_vods(source=m_source, state=m_sync_state, settings=m_database, cache=m_vods,
+                               targets=targets, send=send_to_channel, char_aliases=config.char_aliases())
+    except YggdrasilError as error:
+        print(f"VOD sync skipped, Yggdrasil unavailable: {error}")
+    except Exception as error:
+        print(f"VOD sync failed: {error!r}")
+
+
+def collect_vods(ctx, date: str = None):
+    """VODs of this text channel that pass its filter. Returns (vods, notice) or raises ValueError on a bad date."""
+    if date is not None:
+        datetime.strptime(date, "%Y-%m-%d")  # ValueError on bad format
+    notice = None
+    try:
+        vods = m_source.list()
+    except YggdrasilUnavailable:
+        vods = m_vods.list()
+        notice = "⚠️ Yggdrasil is not reachable, showing the last VODs cached locally."
+    cfg = m_config[ctx.guild.id]
+    ids = set(cfg.targets(ctx.guild.id, [ctx.channel.id], m_database)[0].youtube_channel_ids)
+    flt = cfg.get_filter(ctx.guild.id, ctx.channel.id, m_database)
+    aliases = config.char_aliases()
+    selected = [v for v in vods if v.youtube_channel_id in ids and vod_matches(v, flt, aliases)
+                and (date is None or v.published_at[:10] >= date)]
+    return sorted(selected, key=lambda v: v.published_at), notice
+
+
+# ------------ Helper functions (display) -------------
 async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = False):
     """Gets videos for a channel and sends them to the channel. This is used in the get_old_videos command and in the automatic updates task.
 
@@ -55,23 +119,28 @@ async def get_videos_for_channel(ctx, date: str = None, show_repeated: bool = Fa
     Returns:
         _type_: None
     """
-    # Gather database videos and then fetch new videos from youtube into the database. This way, we can compare the videos and show which ones are new and which ones were already sent before.
-    database_videos = m_database.get_published(ctx.guild.id, ctx.channel.id)
-    video_list = await asyncio.to_thread(m_config[ctx.guild.id].get_old_videos, ctx.guild.id, ctx.channel.id, youtube, date, m_database, m_vods)
-    
-    # Incorrect date format, return error message
-    if len(video_list) == 1 and "error" in video_list[0]:
-        await ctx.send(video_list[0]["error"])
-        return    
-    
-    new_videos = [video for video in video_list if video['url'] not in database_videos]
-    repeated_videos = [video for video in video_list if video['url'] in database_videos]
-    for msg in new_videos:
-        dt = datetime.fromisoformat(msg['publishedAt'].replace("Z", "+00:00"))
-        formatted_date = dt.strftime("%Y-%m-%d %H:%M")
-        await ctx.send(f"{msg['title']} ({formatted_date}): {msg['url']}")
+    try:
+        vods, notice = await asyncio.to_thread(collect_vods, ctx, date)
+    except ValueError:
+        await ctx.send("Incorrect date format. Use YYYY-MM-DD.")
+        return
+    if notice:
+        await ctx.send(notice)
+    published = m_database.get_published(ctx.guild.id, ctx.channel.id)
+    new_videos = [{"title": v.title, "url": v.url, "vod": v} for v in vods if v.video_id not in published]
+    repeated_videos = [{"title": v.title, "url": v.url} for v in vods if v.video_id in published]
+    for item in new_videos:
+        vod = item["vod"]
+        # Claim before sending so two concurrent runs never post the same VOD twice.
+        if not m_database.add_published(ctx.guild.id, ctx.channel.id, vod.video_id, vod.title, vod.url, vod.published_at):
+            continue
+        try:
+            await ctx.send(format_vod(vod))
+        except BaseException:
+            m_database.remove_published(ctx.guild.id, ctx.channel.id, vod.video_id)
+            raise
         await asyncio.sleep(3)
-        
+
     if repeated_videos and show_repeated:
         page_size = 8  # number of videos per page
         pages = [
@@ -129,11 +198,7 @@ async def on_ready():
     and stores it in memory, so it can be accessed faster when the commands are called.
     It also loads the list of characters from the config file.
     """
-    file_json = {}
-    if os.path.exists('data/config.json'):
-        with open('data/config.json', 'r') as file:
-            file_json = json.load(file)
-    config.smash_characters = file_json["char_names"]
+    config.smash_characters = config._read_config_file().get("char_names", {})
 
     for guild in bot.guilds:
         m_config[guild.id] = config.MyConfig()
@@ -141,7 +206,7 @@ async def on_ready():
         print(f"Loaded config for guild {guild.name} ({guild.id}): {guild_data}")
         if not guild_data:
             print(f"No config found for guild {guild.name} ({guild.id}), initializing empty config.")
-            return
+            continue
         for channel_id, channel_data in guild_data.items():
             enforce_values = {
                 "enforce_character_1": channel_data["enforce_character_1"] if "enforce_character_1" in channel_data else False,
@@ -150,7 +215,27 @@ async def on_ready():
                 "enforce_player_2": channel_data["enforce_player_2"] if "enforce_player_2" in channel_data else True
             }
             m_config[guild.id].add_channel(channel_id, channel_data["characters_1"], channel_data["characters_2"], channel_data["players_1"], channel_data["players_2"], channel_data["youtube_channels"], enforce_values)
-            
+
+    await asyncio.to_thread(register_local_channels_in_yggdrasil)
+    if not vod_sync_loop.is_running():
+        vod_sync_loop.start()
+
+
+def register_local_channels_in_yggdrasil():
+    """Best effort: make sure every YouTube channel stored locally is also watched by Yggdrasil."""
+    if m_yggdrasil is None:
+        print("Yggdrasil is not configured (YGGDRASIL_URL / YGGDRASIL_TOKEN): no VODs will be published.")
+        return
+    try:
+        known = {s["channel_id"] for s in m_yggdrasil.list_sources()}
+        for cfg in m_config.values():
+            for name, channel_id in cfg.all_youtube_channels().items():
+                if channel_id not in known:
+                    m_yggdrasil.add_source(channel_id, name=name)
+                    known.add(channel_id)
+    except YggdrasilError as error:
+        print(f"Could not register local YouTube channels in Yggdrasil: {error}")
+
 
 # Show welcome message and create memory for the server
 @bot.event
@@ -211,16 +296,15 @@ async def on_command_error(ctx, error):
         await ctx.send(f"An error occurred while processing the command: {str(error)}")
         
 @bot.event
-async def on_message_deleted(message):
+async def on_message_delete(message):
     """Event that is called when a message is deleted. It checks if the message was sent by the bot and if it contains a video link, it removes the video from the database to avoid showing it again in the future.
 
     Args:
         message (_type_): The message that was deleted.
     """
-    if message.author == bot.user:
-        if "http" not in message.content:
-            return
-        url = ["http" + part for part in message.content.split("http")[1:]]  # Get all links in the message (When sending youtube links, bot only sends one link per message)
+    if message.guild is None or message.author != bot.user:
+        return
+    for url in urls_in_message(message.content):
         m_database.remove_published_by_url(message.guild.id, message.channel.id, url)
 
 # ------------- Commands -------------
@@ -399,9 +483,10 @@ async def enforce_character_1(ctx, state: str):
         await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
         return
     
-    m_config[ctx.guild.id].set_enforce_character_1(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    m_config[ctx.guild.id].enforce_character_1(ctx.guild.id, ctx.channel.id, state.lower() == "on", m_database)
     await ctx.send(f"Enforcing character 1 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
 
+@bot.command()
 async def enforce_character_2(ctx, state: str):
     """Command to enforce that character 2 is in the title of the video.
 
@@ -413,7 +498,7 @@ async def enforce_character_2(ctx, state: str):
         await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
         return
     
-    m_config[ctx.guild.id].set_enforce_character_2(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    m_config[ctx.guild.id].enforce_character_2(ctx.guild.id, ctx.channel.id, state.lower() == "on", m_database)
     await ctx.send(f"Enforcing character 2 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
 
 @bot.command()
@@ -532,16 +617,18 @@ async def add_youtube_channel(ctx, *channels: str):
     added_channels = []
     repeated_channels = []
     incorrect_channels = []
+    failed_messages = []
     for channel in channels:
-        state = m_config[ctx.guild.id].add_youtube_channel(ctx.guild.id, ctx.channel.id, channel, youtube, m_database)
-        if "stored" in state.lower():
+        state = await asyncio.to_thread(m_config[ctx.guild.id].add_youtube_channel, ctx.guild.id, ctx.channel.id, channel, m_yggdrasil, m_database)
+        if "could not register" in state.lower():
+            failed_messages.append(state)
+        elif "stored" in state.lower() and "already" not in state.lower():
             added_channels.append(channel)
         elif "already" in state.lower():
             repeated_channels.append(channel)
         elif "not found" in state.lower() or "invalid" in state.lower():
             incorrect_channels.append(channel)
-        
-            
+
     # Merge the messages for added channels and repeated channels into one message to avoid spamming the channel with multiple messages if multiple channels are added at once.
     final_message = ""
     if added_channels:
@@ -549,7 +636,9 @@ async def add_youtube_channel(ctx, *channels: str):
     if repeated_channels:
         final_message += f"Youtube channel(s) '{', '.join(repeated_channels)}' were already in the list.\n"
     if incorrect_channels:
-        final_message += f"These channels were not found or have an invalid format and were not added: {', '.join(incorrect_channels)}. Please provide a channel ID starting with 'UC' or a channel name starting with '@'."
+        final_message += f"These channels were not found or have an invalid format and were not added: {', '.join(incorrect_channels)}. Please provide a channel ID starting with 'UC' or a channel name starting with '@'.\n"
+    for failure in sorted(set(failed_messages)):
+        final_message += f"{failure}\n"
     await ctx.send(final_message)
     
 @bot.command()
@@ -571,7 +660,8 @@ async def remove_youtube_channel(ctx, *channels: str):
     removed_channels = []
     missing_channels = []
     for channel in channels:
-        state = m_config[ctx.guild.id].remove_youtube_channel(ctx.guild.id, ctx.channel.id, channel, m_database)
+        state = await asyncio.to_thread(m_config[ctx.guild.id].remove_youtube_channel, ctx.guild.id, ctx.channel.id, channel,
+                                        m_database, m_yggdrasil, other_users_of)
         if "removed" in state.lower():
             removed_channels.append(channel)
         elif "not found" in state.lower():
@@ -592,14 +682,15 @@ async def list_youtube_channels(ctx):
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
     """
-    channels = m_config[ctx.guild.id].get_youtube_channels(ctx.guild.id, ctx.channel.id, m_database)
-    if not channels:
+    entries = await asyncio.to_thread(m_config[ctx.guild.id].list_youtube_channels, ctx.guild.id, ctx.channel.id, m_database, m_yggdrasil)
+    if not entries:
         await ctx.send(f"No youtube channels stored yet.")
         return
-    
-    page_size = 15  # number of characters per page
+    channels = [name if watched else f"{name} ⚠️ not watched by Yggdrasil" for name, _id, watched in entries]
+
+    page_size = 15  # number of channels per page
     pages = [
-        list(channels)[i:i+page_size]
+        channels[i:i+page_size]
         for i in range(0, len(channels), page_size)
     ]
 
@@ -799,7 +890,7 @@ async def enforce_player_1(ctx, state: str):
         await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
         return
     
-    m_config[ctx.guild.id].set_enforce_player_1(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    m_config[ctx.guild.id].enforce_player_1(ctx.guild.id, ctx.channel.id, state.lower() == "on", m_database)
     await ctx.send(f"Enforcing player 1 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
     
 @bot.command()
@@ -814,7 +905,7 @@ async def enforce_player_2(ctx, state: str):
         await ctx.send(f"Invalid state '{state}'. Please provide 'on' or 'off'.")
         return
     
-    m_config[ctx.guild.id].set_enforce_player_2(ctx.guild.id, ctx.channel.id, 1, state.lower() == "on", m_database)
+    m_config[ctx.guild.id].enforce_player_2(ctx.guild.id, ctx.channel.id, state.lower() == "on", m_database)
     await ctx.send(f"Enforcing player 2 in video titles {'enabled' if state.lower() == 'on' else 'disabled'}.")
 
 
@@ -894,7 +985,7 @@ async def enforce_characters(ctx, state : bool):
         await ctx.send(f"Cannot change enforce characters setting while video gathering is in progress. Please stop the video gathering task with !stop_video_gathering command, change the setting and then start the video gathering again with !get_old_videos command.")
         return
     
-    m_config[ctx.guild.id].enforce_characters(ctx.guild.id, ctx.channel.id, state, m_database)
+    m_config[ctx.guild.id].set_enforce_characters(ctx.guild.id, ctx.channel.id, state, m_database)
     await ctx.send(f"Enforce characters set to '{state}'")
     
 @bot.command()
@@ -905,28 +996,14 @@ async def update_frequently(ctx):
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
     """
-    
-    if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "update_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
-        await ctx.send(f"Automatic updates are already enabled for this channel. Please wait for it to send new videos or stop it with !stop_updates command before starting a new one.")
+    if (ctx.guild.id, ctx.channel.id) in m_database.list_auto_update_channels():
+        await ctx.send("Automatic updates are already enabled for this channel. Stop them with !stop_updates.")
         return
-    elif ctx.guild.id not in m_guild_tasks:
-        m_guild_tasks[ctx.guild.id] = {}
-        if ctx.channel.id not in m_guild_tasks[ctx.guild.id]:
-            m_guild_tasks[ctx.guild.id][ctx.channel.id] = {}
-
-    async def update_task():
-        while True:
-            if ctx.guild.id in m_guild_tasks and ctx.channel.id in m_guild_tasks[ctx.guild.id] and "video_gathering_task" in m_guild_tasks[ctx.guild.id][ctx.channel.id]:
-                await ctx.send(f"Skipping update because video gathering is in progress. Please wait for it to finish to get the latest videos, or stop the video gathering task with !stop_video_gathering command to allow updates to run.")
-                await asyncio.sleep(900)  # wait for 15 minutes before checking again
-                continue
-            date = (datetime.now() - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            await get_videos_for_channel(ctx, date)
-            await asyncio.sleep(900)  # wait for 15 minutes
-
-    task = asyncio.create_task(update_task())
-    m_guild_tasks[ctx.guild.id][ctx.channel.id]["update_task"] = task
-    await ctx.send("Automatic updates enabled for this channel every 15 minutes.")
+    m_config[ctx.guild.id].targets(ctx.guild.id, [ctx.channel.id], m_database)  # makes sure the channel row exists
+    m_database.set_auto_update(ctx.guild.id, ctx.channel.id, True)  # persisted: survives restarts
+    if not vod_sync_loop.is_running():
+        vod_sync_loop.start()
+    await ctx.send(f"Automatic updates enabled for this channel (checked every {SYNC_MINUTES} minutes).")
     
 @bot.command()
 async def stop_updates(ctx):
@@ -935,15 +1012,11 @@ async def stop_updates(ctx):
     Args:
         ctx (_type_): context of the command, used to get the guild and channel id to get the config and database for that channel.
     """
-    if ctx.guild.id not in m_guild_tasks or ctx.channel.id not in m_guild_tasks[ctx.guild.id]:
+    if (ctx.guild.id, ctx.channel.id) not in m_database.list_auto_update_channels():
         await ctx.send("Automatic updates are not enabled for this channel.")
         return
-    task = m_guild_tasks[ctx.guild.id][ctx.channel.id].pop("update_task", None)
-    if task:
-        task.cancel()
-        await ctx.send("Automatic updates stopped for this channel.")
-    else:
-        await ctx.send("Automatic updates are not enabled for this channel.")
+    m_database.set_auto_update(ctx.guild.id, ctx.channel.id, False)
+    await ctx.send("Automatic updates stopped for this channel.")
 
 @bot.command()
 async def stop_video_gathering(ctx):

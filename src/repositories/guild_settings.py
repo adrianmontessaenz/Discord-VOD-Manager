@@ -72,6 +72,9 @@ class SqliteGuildSettingsRepository:
             published_at TEXT,
             PRIMARY KEY (guild_id, channel_id, video_id)
         )""")
+        columns = [r["name"] for r in self.cursor.execute("PRAGMA table_info(channels)").fetchall()]
+        if "auto_update" not in columns:
+            self.cursor.execute("ALTER TABLE channels ADD COLUMN auto_update INTEGER NOT NULL DEFAULT 0")
         self.conn.commit()
         
     def add_channel(self, guild_id, channel_id, enforce_character_1=False, enforce_character_2=False, enforce_player_1=True, enforce_player_2=True):
@@ -188,12 +191,30 @@ class SqliteGuildSettingsRepository:
         DELETE FROM channel_youtube WHERE guild_id = ? AND channel_id = ? AND youtube_channel_id = ?""", (guild_id, channel_id, youtube_channel_id))
         self.conn.commit()
     
-    def add_published(self, guild_id, channel_id, video_id, title, url, published_at):
-        """Record that a video was posted to a channel."""
+    def add_published(self, guild_id, channel_id, video_id, title, url, published_at) -> bool:
+        """Claim a video for a channel. True only when the row was newly inserted."""
         self.cursor.execute("""
         INSERT OR IGNORE INTO channel_videos (guild_id, channel_id, video_id, title, url, published_at)
         VALUES (?, ?, ?, ?, ?, ?)""", (guild_id, channel_id, video_id, title, url, published_at))
         self.conn.commit()
+        return self.cursor.rowcount == 1
+
+    def remove_published(self, guild_id, channel_id, video_id) -> None:
+        """Release a claim (by video id)."""
+        self.cursor.execute(
+            "DELETE FROM channel_videos WHERE guild_id = ? AND channel_id = ? AND video_id = ?",
+            (guild_id, channel_id, video_id))
+        self.conn.commit()
+
+    def set_auto_update(self, guild_id, channel_id, enabled: bool) -> None:
+        self.cursor.execute(
+            "UPDATE channels SET auto_update = ? WHERE guild_id = ? AND channel_id = ?",
+            (1 if enabled else 0, guild_id, channel_id))
+        self.conn.commit()
+
+    def list_auto_update_channels(self):
+        self.cursor.execute("SELECT guild_id, channel_id FROM channels WHERE auto_update = 1")
+        return [(r["guild_id"], r["channel_id"]) for r in self.cursor.fetchall()]
         
     def remove_published_by_url(self, guild_id, channel_id, video_url):
         """Forget a posted video (by URL) for a channel."""
@@ -202,11 +223,11 @@ class SqliteGuildSettingsRepository:
         self.conn.commit()
     
     def get_published(self, guild_id, channel_id):
-        """Get the videos already posted to a channel."""
+        """Get the ids of the videos already posted to a channel."""
         self.cursor.execute("""
-        SELECT video_id, title, url, published_at FROM channel_videos
+        SELECT video_id FROM channel_videos
         WHERE guild_id = ? AND channel_id = ?""", (guild_id, channel_id))
-        return self.cursor.fetchall()
+        return {r["video_id"] for r in self.cursor.fetchall()}
     
     def clear_guild_database(self, guild_id):
         """Clear all data for a guild."""

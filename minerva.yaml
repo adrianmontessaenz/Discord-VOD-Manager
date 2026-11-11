@@ -5,9 +5,9 @@ group: Smash
 mythology: Norse
 tree: Yggdrasil
 status: in development        # idea | in development | mvp | stable | paused
-phase: "Phase 0 (ecosystem preparation); next: Phase 1 (store VODs in Yggdrasil)"
+phase: "Phase 1 (VODs read from Yggdrasil, M2); next: close the MVP and Phase 2"
 version: 0.3.0
 platforms: [Discord bot, Docker (dev image)]
-technologies: [Python 3.11+, discord.py, YouTube Data API v3, SQLite, python-dotenv, pytest]
-depends_on: [YouTube Data API v3, Discord API, Yggdrasil (future)]
+technologies: [Python 3.11+, discord.py, requests, SQLite, python-dotenv, pytest]
+depends_on: [Discord API, Yggdrasil]
 documents: { roadmap: docs/roadmap.md, architecture: docs/architecture.md, changelog: CHANGELOG.md }

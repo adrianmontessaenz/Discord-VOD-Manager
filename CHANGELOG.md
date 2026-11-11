@@ -6,14 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
+- Yggdrasil client (`YggdrasilClient`, `YggdrasilVodRepository`): registers watched YouTube channels, requests their history and reads VODs by revision; `YGGDRASIL_URL` and `YGGDRASIL_TOKEN` in `.env` (2026-11-11).
+- Automatic publication loop (every 15 minutes) driven by a persisted revision cursor and a claim-before-send step, so a VOD is never posted twice, even across restarts; the first run only records the cursor (2026-11-11).
+- `src/filters.py`: per-channel filter with accent- and case-insensitive token matching and character aliases from `data/config.json` (2026-11-11).
+- Tables `sync_state`, columns `channels.auto_update` and `vods.revision`, added to existing databases without a migration step (2026-11-11).
 - Ecosystem documents: `minerva.yaml`, `docs/roadmap.md`, `docs/architecture.md` and `CHANGELOG.md` (2026-11-10).
 - Repository layer in `src/repositories/`: `VodRepository` for VODs and a settings repository for server configuration and publication history, with tests (2026-11-10).
 - `.env.example` with the required variable names (2026-11-10).
 
 ### Changed
+- `!update_frequently` / `!stop_updates` are now stored in SQLite and survive restarts; one shared loop replaces the per-channel tasks (2026-11-11).
+- `!add_youtube_channel` registers the channel in Yggdrasil first and stores nothing if that fails; `!remove_youtube_channel` removes it from Yggdrasil only when no other text channel uses it; `!list_youtube_channels` marks channels Yggdrasil does not watch (2026-11-11).
+- `!get_old_videos` reads from Yggdrasil (local cache if it is down) (2026-11-11).
 - `src/database.py` moved to `src/repositories/guild_settings.py` and renamed; video-history methods are now `add_published`, `get_published` and `remove_published_by_url` (2026-11-10).
 - Every video that passes the filters is now also saved in a local `vods` table (2026-11-10).
 - README now has the codename header and the "Why" section, and no longer claims unfinished behaviour (2026-06-11, 2026-11-10).
+
+### Removed
+- The YouTube Data API client, `YOUTUBE_API_KEY` and `google-api-python-client`: Ratatoskr no longer calls YouTube (2026-11-11).
+
+### Fixed
+- Character filter, `enforce_*` commands, `enforce_character_2` registration, duplicate posts, message deletion (`on_message_delete`), `!remove_youtube_channel`, `!add_youtube_channel` by id and `on_ready` with several servers (2026-11-11).
 
 ## [0.3.0] - 2026-02-14
 

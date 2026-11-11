@@ -1,9 +1,22 @@
-from datetime import datetime, timezone
 import json
 import os
-from repositories import SqliteGuildSettingsRepository, Vod
+from filters import ChannelFilter
+from repositories import SqliteGuildSettingsRepository, YggdrasilError
+from vod_sync import ChannelTarget
 
 smash_characters={}
+
+
+def _read_config_file() -> dict:
+    if os.path.exists('data/config.json'):
+        with open('data/config.json', 'r', encoding='utf-8') as file:
+            return json.load(file)
+    return {}
+
+
+def char_aliases() -> dict:
+    """Character translations from data/config.json["char_names"]: {english name: (translations...)}."""
+    return {name: tuple(names) for name, names in _read_config_file().get("char_names", {}).items()}
 
 class _MyChannels:
     """
@@ -13,11 +26,8 @@ class _MyChannels:
     def __init__(self):
         """Initialize the configuration for a channel. 
         It will load the youtube channels from the config file if it exists, otherwise it will start with an empty list."""
-        file_json = {}
-        if os.path.exists('data/config.json'):
-            with open('data/config.json', 'r') as file:
-                file_json = json.load(file)
-        
+        file_json = _read_config_file()
+
         self.characters_1 = []
         self.characters_2 = []
         self.enforce_character_1 = False
@@ -26,7 +36,7 @@ class _MyChannels:
         self.players_2 = []
         self.enforce_player_1 = True
         self.enforce_player_2 = True
-        self.youtube_channels = file_json["youtube_channels"]
+        self.youtube_channels = dict(file_json.get("youtube_channels", {}))  # {name: id}, own copy
 
 class MyConfig:
     def __init__(self):
@@ -202,67 +212,130 @@ class MyConfig:
             self._add_new_channel(id, guild_id, database)
         self._my_channels[id].enforce_character_2 = state
         database.set_enforce_character_2(guild_id, id, state)
-        
-    def add_youtube_channel(self, guild_id: int, id: int, yt: str, youtube, database: SqliteGuildSettingsRepository = None):
-        """Add a youtube channel to the list of channels to search for videos.
-         You can add a channel by its ID (starting with UC) or by its @name. 
-         If you add it by @name, the bot will search for the channel and add it if it finds it.
+
+    def set_enforce_characters(self, guild_id: int, id: int, state: bool, database: SqliteGuildSettingsRepository = None):
+        """Shortcut: set both enforce_character_1 and enforce_character_2."""
+        self.enforce_character_1(guild_id, id, state, database)
+        self.enforce_character_2(guild_id, id, state, database)
+
+    def get_filter(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None) -> ChannelFilter:
+        """Build the ChannelFilter of a text channel from its stored configuration."""
+        if id not in self._my_channels.keys():
+            self._add_new_channel(id, guild_id, database)
+        c = self._my_channels[id]
+        return ChannelFilter(
+            players_1=tuple(c.players_1), players_2=tuple(c.players_2),
+            characters_1=tuple(c.characters_1), characters_2=tuple(c.characters_2),
+            enforce_player_1=c.enforce_player_1, enforce_player_2=c.enforce_player_2,
+            enforce_character_1=c.enforce_character_1, enforce_character_2=c.enforce_character_2)
+
+    def uses_youtube_channel(self, channel_id: str) -> bool:
+        """True if any text channel of this guild stores this YouTube channel id."""
+        return any(channel_id in c.youtube_channels.values() for c in self._my_channels.values())
+
+    def all_youtube_channels(self) -> dict:
+        """{name: channel_id} for every YouTube channel stored in this guild."""
+        result = {}
+        for c in self._my_channels.values():
+            result.update(c.youtube_channels)
+        return result
+
+    def _known_name_for_id(self, channel_id: str):
+        """Name under which any local text channel already stores this YouTube channel id."""
+        for channel in self._my_channels.values():
+            for name, known_id in channel.youtube_channels.items():
+                if known_id == channel_id:
+                    return name
+        return None
+
+    def add_youtube_channel(self, guild_id: int, id: int, yt: str, sources, database: SqliteGuildSettingsRepository = None):
+        """Add a YouTube channel to this text channel and register it in Yggdrasil.
+         You can add a channel by its ID (starting with UC) or by its @handle.
 
         Args:
-            id (int): The ID of the channel.
-            yt (str): The YouTube channel ID or @name.
-            youtube (_type_): The YouTube API object.
+            id (int): The ID of the Discord text channel.
+            yt (str): The YouTube channel ID or @handle.
+            sources: A YggdrasilClient (or None when Yggdrasil is not configured).
 
         Returns:
-            _type_: The result of the operation.
+            str: The result of the operation.
         """
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
-        if yt.startswith("UC"):
-            if yt in self._my_channels[id].youtube_channels:
-                return f"Channel '{yt} was already stored"
-            self._my_channels[id].youtube_channels.append(yt)
-            return f"Channel '{yt}' was stored"
-        elif yt.startswith("@"):
-            yt = yt[1:]
-        else:
+        local = self._my_channels[id].youtube_channels
+        if not (yt.startswith("UC") or yt.startswith("@")):
             return f"Invalid channel format '{yt}'. Please provide a channel ID starting with 'UC' or a channel name starting with '@'"
-        
-        res = youtube.search().list(
-            part="snippet",
-            q=yt,
-            type="channel",
-            maxResults=1
-        ).execute()
-        
-        items = res.get("items")
-        if not items:
-            return f"Channel '{yt}' not found"
-        
-        if items[0]["snippet"]["channelId"] in self._my_channels[id].youtube_channels:
-            return f"Channel '{yt} was already stored"
-        
-        self._my_channels[id].youtube_channels[items[0]["snippet"]["title"]] = items[0]["snippet"]["channelId"]
-        database.add_youtube_channel(guild_id, id, items[0]["snippet"]["channelId"], items[0]["snippet"]["title"])
+        if yt.startswith("UC") and yt in local.values():
+            return f"Channel '{yt}' was already stored"
+        if sources is None:
+            return "Could not register the channel in Yggdrasil: Yggdrasil is not configured"
+
+        known_name = self._known_name_for_id(yt) if yt.startswith("UC") else None
+        try:
+            info = sources.add_source(yt, name=known_name) if known_name else sources.add_source(yt)
+        except YggdrasilError as error:
+            return f"Could not register the channel in Yggdrasil: {error}"
+        channel_id, name = info["channel_id"], info["name"]
+        if channel_id in local.values():
+            return f"Channel '{yt}' was already stored"
+
+        local[name] = channel_id
+        database.add_youtube_channel(guild_id, id, channel_id, name)
+        try:
+            sources.request_history(channel_id)
+        except YggdrasilError:
+            pass  # best effort: the history can be requested again later
         return f"Channel '{yt}' was stored"
-    
-    def remove_youtube_channel(self, guild_id: int, id: int, yt: str, database: SqliteGuildSettingsRepository = None):
-        """Remove a youtube channel from the list of channels to search for videos.
+
+    def remove_youtube_channel(self, guild_id: int, id: int, yt: str, database: SqliteGuildSettingsRepository = None,
+                               sources=None, other_users=None):
+        """Remove a YouTube channel (by name or id) from this text channel.
+        It is removed from Yggdrasil only when no other local text channel still uses it.
 
         Args:
-            id (int): The ID of the channel.
-            yt (str): The YouTube channel ID or @name.
-
-        Returns:
-            _type_: The result of the operation.
+            other_users: callable(channel_id) -> bool, True if another local text channel uses the channel.
         """
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
-        if yt in self._my_channels[id].youtube_channels.keys():
-            self._my_channels[id].youtube_channels.pop(yt)
-            database.remove_youtube_channel(guild_id, id, self._my_channels[id].youtube_channels[yt])
-            return f"Channel '{yt}' was removed from search"
-        return f"Channel '{yt}' was not found in search"
+        local = self._my_channels[id].youtube_channels
+        if yt not in local:
+            by_id = [name for name, known_id in local.items() if known_id == yt]
+            if not by_id:
+                return f"Channel '{yt}' was not found in search"
+            yt = by_id[0]
+        channel_id = local[yt]  # read before popping
+        local.pop(yt)
+        database.remove_youtube_channel(guild_id, id, channel_id)
+        if sources is not None and not (other_users and other_users(channel_id)):
+            try:
+                sources.remove_source(channel_id)
+            except YggdrasilError:
+                pass  # local removal stands; Yggdrasil keeps watching until the next removal
+        return f"Channel '{yt}' was removed from search"
+
+    def list_youtube_channels(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None, sources=None):
+        """[(name, id, watched_by_yggdrasil)]. Everything counts as watched when Yggdrasil cannot be asked."""
+        if id not in self._my_channels.keys():
+            self._add_new_channel(id, guild_id, database)
+        local = self._my_channels[id].youtube_channels
+        watched = None
+        if sources is not None:
+            try:
+                watched = {s["channel_id"] for s in sources.list_sources()}
+            except YggdrasilError:
+                watched = None
+        return [(name, cid, watched is None or cid in watched) for name, cid in local.items()]
+
+    def targets(self, guild_id: int, auto_channel_ids, database: SqliteGuildSettingsRepository = None):
+        """ChannelTargets for the given Discord text channels of a guild."""
+        result = []
+        for channel_id in auto_channel_ids:
+            if channel_id not in self._my_channels.keys():
+                self._add_new_channel(channel_id, guild_id, database)
+            ids = frozenset(self._my_channels[channel_id].youtube_channels.values())
+            result.append(ChannelTarget(guild_id, channel_id, ids,
+                                        self.get_filter(guild_id, channel_id, database)))
+        return result
         
     def get_youtube_channels(self, guild_id: int, id: int, database: SqliteGuildSettingsRepository = None):
         """Get the list of YouTube channels for a specific channel.
@@ -400,141 +473,3 @@ class MyConfig:
         if id not in self._my_channels.keys():
             self._add_new_channel(id, guild_id, database)
         return self._my_channels[id].players_2
-    
-    def get_old_videos(self, guild_id: int, id: int, youtube, date: str = None, database: SqliteGuildSettingsRepository = None, vod_repository=None):
-        """Get old videos for a specific channel.
-
-        Args:
-            id (int): The ID of the channel.
-            youtube (_type_): The YouTube API client.
-            date (str, optional): The date to filter videos by. Only videos published after this date will be returned. Should be in the format 'YYYY-MM-DD'. Defaults to None, which means no date filtering.
-
-        Returns:
-            _type_: The list of old videos for the specified channel.
-        """
-        if id not in self._my_channels.keys():
-            self._add_new_channel(id, guild_id, database)
-        all_videos = []
-        
-        # Parse date if provided. If provided wrong, print error and ignore date filter
-        filter_date = None
-        if date is not None:
-            try:
-                filter_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            except ValueError:
-                print(f"Invalid date format '{date}'. Expected format is 'YYYY-MM-DD'")
-                return [{"error": f"Invalid date format '{date}'. Expected format is 'YYYY-MM-DD'"}]
-
-        # Loop on youtube channels
-        for youtube_channel in self._my_channels[id].youtube_channels:
-            print(f"Getting videos for channel '{youtube_channel}'")
-            # Get uploads playlist
-            res =  youtube.channels().list(
-                part="contentDetails",
-                id=self._my_channels[id].youtube_channels[youtube_channel]
-            ).execute()
-            
-            items = res.get("items")
-            uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-            next_page_token = None
-            
-            # Loop on videos
-            loopCheck = True
-            while loopCheck:
-                res = youtube.playlistItems().list(
-                    part="snippet",
-                    playlistId=uploads_playlist_id,
-                    maxResults=25,
-                    pageToken=next_page_token
-                ).execute()                
-                
-                # For each video in page, check if its valid following criteria
-                for video in res.get("items", []):
-                    video_id = video["snippet"]["resourceId"]["videoId"]
-                    title = video["snippet"]["title"]
-                    url = f"https://www.youtube.com/watch?v={video_id}"
-                    published_at = video["snippet"]["publishedAt"]  # ISO 8601 string
-                 
-                    # Convert to datetime
-                    dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-
-                    #
-                    # Check if older than 2019 or filter date, if so stop the loop
-                    if dt.year < 2019 or filter_date is not None and dt < filter_date:
-                        loopCheck = False
-                        break  # stop the loop entirely
-                    
-                    has_character_1 = False
-                    has_character_2 = False
-                    has_player_1 = False
-                    has_player_2 = False
-                    
-                    # Check character names
-                    if len(self._my_channels[id].characters_1) >= 1:
-                        for char in self._my_channels[id].characters_1:
-                            if char in title:
-                                print(f"Video '{title}' has character '{char}' in it")
-                                has_character_1 = True
-                                break
-                    else:
-                        has_character_1 = True
-                        
-                    # Check character names
-                    if len(self._my_channels[id].characters_2) >= 1:
-                        for char in self._my_channels[id].characters_2:
-                            if char in title:
-                                print(f"Video '{title}' has character '{char}' in it")
-                                has_character_2 = True
-                                break
-                    else:
-                        has_character_2 = True
-                        
-                    # Check player names
-                    if len(self._my_channels[id].players_1) >= 1:
-                        for player in self._my_channels[id].players_1:
-                            if player in title:
-                                print(f"Video '{title}' has player1 '{player}' in it")
-                                has_player_1 = True
-                                break
-                    else:
-                        has_player_1 = True
-                    
-                    # Check player names
-                    if len(self._my_channels[id].players_2) >= 1:
-                        for player in self._my_channels[id].players_2:
-                            if player in title:
-                                print(f"Video '{title}' has player2 '{player}' in it")
-                                has_player_2 = True
-                                break
-                    else:
-                        has_player_2 = True
-                    
-                    # Check if video is valid
-                    if has_player_1 is True and has_player_2 is True and ((has_character_1 is True and has_character_2 is True) or self._my_channels[id].enforce_characters is False): 
-                        print(f"Video '{title}' passed all criteria, adding it to the list")
-                        all_videos.append(
-                            {
-                                "title": title,
-                                "url": url,
-                                "publishedAt": published_at
-                            })
-                        database.add_published(guild_id, id, video_id, title, url, published_at)
-                        if vod_repository is not None:
-                            vod_repository.save(Vod(video_id=video_id, title=title, url=url, published_at=published_at,
-                                                    youtube_channel_id=self._my_channels[id].youtube_channels[youtube_channel]))
-                
-                # Skip to next page of videos
-                next_page_token = res.get("nextPageToken")
-                if not next_page_token:
-                    break
-        
-        # Sort all videos from oldest to latest
-        all_videos.sort(key=lambda v: datetime.fromisoformat(v['publishedAt'].replace("Z", "+00:00")))
-        return all_videos
-
-                        
-
-
-        
-        
-        
